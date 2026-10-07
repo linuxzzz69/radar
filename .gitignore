@@ -11,3 +11,6 @@ watcher.log
 nohup.out
 *.pyc
 .DS_Store
+radar-dbc/node_modules/
+node_modules/
+package-lock.json
