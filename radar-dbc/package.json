@@ -1,0 +1,14 @@
+{
+  "name": "radar-dbc",
+  "version": "0.1.0",
+  "description": "DBC on-chain state microservice for Radar - on-chain insider detection for Solana LPs",
+  "main": "dbc_state.js",
+  "scripts": {
+    "start": "node dbc_state.js"
+  },
+  "dependencies": {
+    "@meteora-ag/dynamic-bonding-curve-sdk": "^1.5.9",
+    "@solana/web3.js": "^1.95.0",
+    "express": "^4.19.2"
+  }
+}
