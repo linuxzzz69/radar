@@ -1,0 +1,13 @@
+watcher_state.json
+watch_config.json
+watcher.log
+nohup.out
+__pycache__/
+vps_deploy_key
+vps_deploy_key.pub
+watch_config.json
+watcher_state.json
+watcher.log
+nohup.out
+*.pyc
+.DS_Store

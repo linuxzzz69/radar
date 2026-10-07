@@ -1,0 +1,35 @@
+name: Deploy radar to VPS
+
+on:
+  push:
+    branches: [master]
+    paths-ignore:
+      - "**.md"
+      - "reply-style.md"
+
+  # manual trigger from GitHub UI
+  workflow_dispatch:
+
+jobs:
+  deploy:
+    runs-on: ubuntu-latest
+    steps:
+      - name: Deploy via SSH
+        uses: appleboy/ssh-action@v1.0.3
+        with:
+          host: ${{ secrets.VPS_HOST }}
+          username: ${{ secrets.VPS_USER }}
+          key: ${{ secrets.VPS_SSH_KEY }}
+          script_stop: true
+          script: |
+            cd /opt/radar
+            git pull origin master
+            systemctl restart radar
+            sleep 3
+            if systemctl is-active --quiet radar; then
+              echo "DEPLOY OK: radar active"
+            else
+              echo "DEPLOY FAILED: radar not active"
+              journalctl -u radar -n 20 --no-pager
+              exit 1
+            fi
