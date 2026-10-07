@@ -15,13 +15,32 @@ const {
 } = require("@meteora-ag/dynamic-bonding-curve-sdk");
 
 const PORT = process.env.PORT || 8077;
-const RPCS = (process.env.RPC_URL || "https://solana-rpc.publicnode.com,https://api.mainnet-beta.solana.com").split(",");
-let RPC = RPCS[0];
-// note: SDK client binds one connection; multi-RPC fallback handled by restart or env
 
 
-const connection = new Connection(RPC, "confirmed");
-const client = new DynamicBondingCurveClient(connection, "confirmed");
+// simple sequential RPC fallback wrapper
+const RPCS = (process.env.RPC_URLS || "https://api.mainnet-beta.solana.com,https://api.mainnet-beta.solana.com,https://solana-rpc.publicnode.com")
+  .split(",").map(s => s.trim()).filter(Boolean);
+let rpcIdx = 0;
+async function withClient(fn) {
+  let lastErr;
+  for (let i = 0; i < RPCS.length; i++) {
+    try {
+      const connection = new Connection(RPCS[rpcIdx], "confirmed");
+      const client = new DynamicBondingCurveClient(connection, "confirmed");
+      return await fn(client, connection);
+    } catch (e) {
+      lastErr = e;
+      const msg = String(e.message || e);
+      if (msg.includes("413") || msg.includes("429") || msg.includes("allowance") || msg.includes("Too Many")) {
+        rpcIdx = (rpcIdx + 1) % RPCS.length;
+        continue;
+      }
+      throw e;
+    }
+  }
+  throw lastErr;
+}
+
 const app = express();
 
 function jsonNumbers(o) {
@@ -37,24 +56,23 @@ function jsonNumbers(o) {
   return o;
 }
 
-app.get("/health", (_req, res) => res.json({ ok: true, rpc: RPC }));
+app.get("/health", (_req, res) => res.json({ ok: true, rpcs: RPCS }));
 
 app.get("/state", async (req, res) => {
   const mint = req.query.mint;
   if (!mint) return res.status(400).json({ error: "missing ?mint=" });
   try {
     const baseMint = new PublicKey(mint);
-    const pool = await client.state.getPoolByBaseMint(baseMint);
+    const pool = await withClient((c) => c.state.getPoolByBaseMint(baseMint));
     if (!pool) return res.status(404).json({ error: "no DBC pool for this mint" });
 
-    const vpa = pool; // ProgramAccount<VirtualPool>
-    const vAddr = vpa.publicKey;
-    const acc = vpa.account;
+    const vAddr = pool.publicKey;
+    const ps = pool.account.poolState;
 
     // config details
     let config = null;
     try {
-      config = await client.state.getPoolConfig(acc.config);
+      config = await withClient((c) => c.state.getPoolConfig(ps.config));
     } catch (e) {
       config = { error: String(e.message || e) };
     }
@@ -62,25 +80,55 @@ app.get("/state", async (req, res) => {
     // curve progress (quote side) 0..1
     let curveProgress = null;
     try {
-      curveProgress = await client.state.getPoolQuoteTokenCurveProgress(vAddr);
+      curveProgress = await withClient((c) => c.state.getPoolQuoteTokenCurveProgress(vAddr));
     } catch (e) {
       curveProgress = null;
     }
 
-    // fee metrics (base fee scheduler behavior)
+    // fee metrics
     let feeMetrics = null;
     try {
-      feeMetrics = await client.state.getPoolFeeMetrics(vAddr);
+      feeMetrics = await withClient((c) => c.state.getPoolFeeMetrics(vAddr));
     } catch (e) {
       feeMetrics = null;
     }
 
+    // activation as unix timestamp (DBC stores it as seconds or slots per activationType)
+    const cfg0 = config && !config.error ? config : {};
+    const activationType = cfg0.activationType; // 0 = slot, 1 = timestamp
+    let activationTs = null;
+    const apRaw = ps.activationPoint;
+    if (apRaw !== undefined && apRaw !== null) {
+      const apNum = Number(apRaw.toString ? apRaw.toString() : apRaw);
+      if (activationType === 0) {
+        // slot-based: convert with recent slot perf (approx 400ms/slot)
+        try {
+          const cur = await connection.getSlot();
+          activationTs = Math.floor(Date.now() / 1000) + (apNum - cur) * 0.4;
+        } catch (_) { activationTs = apNum; }
+      } else {
+        activationTs = apNum; // already unix seconds
+      }
+    }
+    const activationTypeVal = activationType;
+
     res.json({
       mint,
       poolAddress: vAddr.toString(),
-      virtualPool: jsonNumbers(acc),
-      config: jsonNumbers(config),
+      configAddress: ps.config?.toString?.() ?? String(ps.config),
+      creator: ps.creator?.toString?.() ?? null,
+      baseMint: ps.baseMint?.toString?.() ?? null,
+      quoteMint: ps.quoteMint?.toString?.() ?? null,
+      isMigrated: !!ps.isMigrated,
+      migrationProgress: ps.migrationProgress?.toString?.() ?? null,
+      poolType: ps.poolType,
+      sqrtPrice: ps.sqrtPrice?.toString?.() ?? null,
+      activationPoint: activationTs,
+      activationType: activationTypeVal,
       curveProgress,
+      poolFees: jsonNumbers(cfg0.poolFees ?? null),
+      migrationOption: cfg0.migrationOption,
+      collectFeeMode: cfg0.collectFeeMode,
       feeMetrics: jsonNumbers(feeMetrics),
       fetchedAt: new Date().toISOString(),
     });
@@ -114,5 +162,5 @@ app.get("/pools-by-config", async (req, res) => {
 });
 
 app.listen(PORT, () => {
-  console.log(`dbc_state.js listening on :${PORT} (rpc: ${RPC})`);
+  console.log(`dbc_state.js listening on :${PORT} (rpcs: ${RPCS.join(", ")})`);
 });
