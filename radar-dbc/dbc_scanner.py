@@ -32,29 +32,34 @@ def dbc_state(mint):
     return get_json(f"{STATE_URL}/state?mint={mint}")
 
 def parse_state(s):
-    """Extract scoring-relevant fields from dbc_state.js output."""
-    vp = s.get("virtualPool", {})
-    cfg = s.get("config", {}) or {}
-    # virtual pool account (borsh-decoded by SDK)
-    pool_state = vp.get("poolState")
-    creator = vp.get("creator")
-    activation = vp.get("activationPoint")
-    curve_prog = s.get("curveProgress")
-
-    # pool config (fee scheduler etc.) — structure varies by SDK version; be defensive
-    fee_params = cfg.get("baseFee", {}) or cfg.get("feeParam", {}) or {}
-    fee_mode = fee_params.get("baseFeeMode") or fee_params.get("mode")
-    # migration settings
-    migr = cfg.get("migrationOption") or cfg.get("migration")
+    """Extract scoring fields from dbc_state.js v2 flat output."""
+    pf = s.get("poolFees") or {}
+    bf = pf.get("baseFee") or {}
+    # cliffFeeNumerator arrives as BN-serialized {negative,words,length,red}
+    def bn(v):
+        if isinstance(v, dict) and "words" in v:
+            total = 0
+            for i, w in enumerate(v.get("words", [])):
+                total += (w or 0) * (2 ** (i * 26))  # BN words are 26-bit little endian
+            return total * (-1 if v.get("negative") else 1)
+        return v
+    cliff = bn(bf.get("cliffFeeNumerator"))
+    cliff_pct = (cliff / 1e9 * 100) if cliff is not None else None  # numerator over 1e9
     return {
-        "pool_state": pool_state,
-        "creator": creator,
-        "activation_point": activation,
-        "curve_progress": curve_prog,
-        "fee_mode": fee_mode,
-        "fee_params": fee_params,
-        "migration_option": migr,
-        "config": cfg,
+        "creator": s.get("creator"),
+        "activation_ts": s.get("activationPoint"),      # unix seconds
+        "activation_type": s.get("activationType"),     # 0=slot,1=timestamp
+        "curve_progress": s.get("curveProgress"),
+        "is_migrated": s.get("isMigrated"),
+        "migration_progress": s.get("migrationProgress"),
+        "base_fee_mode": bf.get("baseFeeMode"),          # 0=fixed,1=linear sched,2=exp sched
+        "cliff_fee_pct": cliff_pct,                      # base fee % over 1e9 scale
+        "dynamic_fee": pf.get("dynamicFee") or {},
+        "migration_option": s.get("migrationOption"),
+        "collect_fee_mode": s.get("collectFeeMode"),
+        "quote_mint": s.get("quoteMint"),
+        "base_mint": s.get("baseMint"),
+        "raw": s,
     }
 
 # ---------- funding trace (reuses insider_radar) ----------
@@ -123,7 +128,7 @@ def score_launch(mint, verbose=False):
         st = parse_state(dbc_state(mint))
     except Exception as e:
         return {"mint": mint, "error": f"DBC state unavailable: {e} (is dbc_state.js running?)"}
-    out["dbc"] = {k: st[k] for k in ("pool_state","creator","curve_progress","fee_mode","migration_option")}
+    out["dbc"] = {k: st[k] for k in ("creator","activation_ts","curve_progress","base_fee_mode","cliff_fee_pct","is_migrated","migration_option")}
 
     # 2. Funding concentration (30)
     trace, err = funding_trace(mint)
@@ -144,13 +149,32 @@ def score_launch(mint, verbose=False):
         }
     f_score = out["components"]["funding"]["score"]
 
-    # 3. Insider timing (20) — holders whose first tx happened near pool activation
-    it_score = 20
-    if trace:
-        # crude version: any top holder first_tx within 2h of activation point
-        # (activation_point and first_tx both unix-ish; refine in v1.1)
-        pass
-    out["components"]["insider_timing"] = {"score": it_score, "note": "v1: neutral unless funding trace shows clusters"}
+    # 3. Insider timing (20) — holders whose wallet was born near pool activation
+    it_score, it_notes = 20, []
+    if trace and st.get("activation_ts"):
+        act = float(st["activation_ts"])
+        now = time.time()
+        near = 0
+        checked = 0
+        for h in trace["holders"]:
+            ts = h.get("first_tx")
+            if not ts or not h.get("funder"):  # self-funded wallets have no funder record
+                continue
+            checked += 1
+            # wallet created (first tx) close to activation = insider prep window
+            if abs(ts - act) <= 6 * 3600:  # funded within ±6h of pool activation
+                near += 1
+        if checked:
+            ratio = near / checked
+            if ratio >= 0.4: it_score = 4
+            elif ratio >= 0.25: it_score = 10
+            elif ratio >= 0.15: it_score = 16
+            it_notes.append(f"{near}/{checked} top holders first-funded within ±6h of activation")
+        else:
+            it_notes.append("no funder timestamps available")
+    else:
+        it_notes.append("no activation timestamp or trace")
+    out["components"]["insider_timing"] = {"score": it_score, "notes": it_notes}
 
     # 4. Sniper overlap (15) — v1.1: replay first N swaps of pool; v1: neutral
     out["components"]["sniper_overlap"] = {"score": 11, "note": "v1: neutral default"}
@@ -159,13 +183,23 @@ def score_launch(mint, verbose=False):
     cb = contract_basics(mint)
     out["components"]["contract"] = {"score": cb["score"], "notes": cb["notes"]}
 
-    # 6. Curve fairness (10) — fee mode + migration sanity from config
+    # 6. Curve fairness (10) — fee mode + migration sanity from on-chain config
     cf = 10
-    fee_mode = str(st.get("fee_mode") or "")
-    # scheduler-based anti-sniper = good; rate limiter deprecated = meh; no decay = meh
-    if "rate" in fee_mode.lower(): cf -= 4
-    if not fee_mode: cf -= 4
-    out["components"]["curve_fairness"] = {"score": max(0,cf), "fee_mode": fee_mode}
+    mode = st.get("base_fee_mode")
+    cliff = st.get("cliff_fee_pct")
+    notes = []
+    # baseFeeMode: 0=fixed, 1=linear scheduler, 2=exp scheduler (anti-sniper decay = good)
+    if mode in (1, 2):
+        notes.append(f"anti-sniper scheduler (mode {mode})")
+    elif mode == 0:
+        cf -= 3; notes.append("fixed fee — no anti-sniper decay")
+    else:
+        cf -= 5; notes.append("unknown fee mode")
+    if cliff is not None:
+        if cliff > 50: cf -= 4; notes.append(f"base fee {cliff:.1f}% (very high)")
+        elif cliff > 20: cf -= 2; notes.append(f"base fee {cliff:.1f}%")
+        else: notes.append(f"base fee {cliff:.2f}% (sane)")
+    out["components"]["curve_fairness"] = {"score": max(0, cf), "base_fee_mode": mode, "cliff_fee_pct": cliff, "notes": notes}
 
     # 7. Liquidity health (10) — curve progress vs nothing else yet
     cp = st.get("curve_progress")
