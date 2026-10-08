@@ -301,14 +301,12 @@ def handle_command(tg, chat, text, state):
                     sol = sol_balance(pub)
                     wallet_line = f"bot wallet <code>{pub[:8]}..</code> ({sol:.3f} SOL)"
                 else:
-                    wallet_line = "opens Jupiter, YOUR wallet signs"
-                # direct Jupiter deep links per amount - no funding step,
-                # no bot custody. YOUR wallet confirms in 2 taps.
+                    wallet_line = "no wallet yet - /wallet to create one"
                 tg_buttons(tg["token"], chat,
                         f"⚡ <b>TRADE PANEL</b>\n{wallet_line}\n"
-                        f"Tap = Jupiter opens with the swap prefilled. Confirm in your wallet app.",
-                        [[("🟢 Buy 0.05", f"jupbuy:0.05:{ca}"), ("🟢 Buy 0.1", f"jupbuy:0.1:{ca}"),
-                          ("🟢 Buy 0.25", f"jupbuy:0.25:{ca}")],
+                        f"Tap Buy/Sell — executes when the wallet is funded.",
+                        [[("🟢 Buy 0.05", f"buy:0.05:{ca}"), ("🟢 Buy 0.1", f"buy:0.1:{ca}"),
+                          ("🟢 Buy 0.25", f"buy:0.25:{ca}")],
                          [("🔴 Sell 25%", f"sell:25:{ca}"), ("🔴 Sell 50%", f"sell:50:{ca}"),
                           ("🔴 Sell 100%", f"sell:100:{ca}")]])
             except Exception as e:
@@ -352,18 +350,7 @@ def handle_callback(tg, chat, cb_id, data):
             handle_command(tg, chat, "/balance", None)
             return
         if action == "jupbuy":
-            link = f"https://jup.ag/swap/SOL-{ca}?amount={val}"
-            tg_buttons(tg["token"], chat,
-                    f"🟢 Buy {val} SOL of <code>{ca[:8]}..</code>\n"
-                    f"Tap to open Jupiter — confirm in your wallet app.",
-                    [[("🚀 OPEN JUPITER — BUY NOW", f"noop:{val}")],
-                     [("↩️ back", f"back:{ca}")]])
-            return
-        if action == "noop":
-            tg_answer_callback(tg["token"], cb_id, "Use the OPEN JUPITER button above")
-            return
-        if action == "back":
-            send_trade_panel(ca)
+            handle_callback(tg, chat, cb_id, f"buy:{val}:{ca}")
             return
         from trading_bot import wallet_exists, load_wallet, do_buy, do_sell, token_balance
         if not wallet_exists():
@@ -375,6 +362,16 @@ def handle_callback(tg, chat, cb_id, data):
             kp, pub = load_wallet()
             from trading_bot import do_buy as _db
             sig, err = _db(ca, amt)
+            if err and "insufficient" in str(err):
+                kp2, pub2 = load_wallet()
+                bal = sol_balance(pub2)
+                tg_buttons(tg["token"], chat,
+                        f"💰 <b>Fund the wallet to enable trading</b>\n"
+                        f"<code>{pub2}</code>\n"
+                        f"balance: {bal:.3f} SOL — send 0.1-0.2 SOL from your main,\n"
+                        f"then tap Buy again. One-time fuel, then one-tap trading.",
+                        [[("🔄 /balance", "balance:check")]])
+                return
             if err:
                 tg_send(tg["token"], chat, f"❌ buy failed: {err}")
             else:
