@@ -297,15 +297,22 @@ def handle_command(tg, chat, text, state):
             try:
                 from trading_bot import wallet_exists, load_wallet, sol_balance
                 if not wallet_exists():
-                    tg_send(tg["token"], chat,
-                            f"⚡ <b>Trading</b>: no wallet yet. /wallet to create one, fund it, then resend the CA for the trade panel.")
+                    tg_buttons(tg["token"], chat,
+                            "⚡ <b>TRADE PANEL</b> — no wallet yet.\n"
+                            "Tap Setup to create one, then fund it with SOL.",
+                            [[("🔧 Setup Wallet", "wallet:setup")]])
                     return
                 _, pub = load_wallet()
                 sol = sol_balance(pub)
-                b05 = f"https://jup.ag/swap/SOL-{ca}?amount=0.05"
-                b10 = f"https://jup.ag/swap/SOL-{ca}?amount=0.1"
-                b25 = f"https://jup.ag/swap/SOL-{ca}?amount=0.25"
-                sell = f"https://jup.ag/swap/{ca}-SOL"
+                if sol < 0.06:
+                    tg_buttons(tg["token"], chat,
+                            f"⚡ <b>TRADE PANEL</b> — <code>{pub[:8]}..</code>\n"
+                            f"💰 {sol:.3f} SOL — too low to trade.\n"
+                            f"Fund this address with SOL, then tap Buy.",
+                            [[("🟢 Buy 0.05", f"buy:0.05:{ca}"), ("🟢 Buy 0.1", f"buy:0.1:{ca}"),
+                              ("🟢 Buy 0.25", f"buy:0.25:{ca}")],
+                             [("🔧 /balance", "balance:check")]])
+                    return
                 tg_buttons(tg["token"], chat,
                         f"⚡ <b>TRADE PANEL</b> — <code>{pub[:8]}..</code> ({sol:.3f} SOL)\n"
                         f"Tap a button — the bot signs and executes instantly.",
