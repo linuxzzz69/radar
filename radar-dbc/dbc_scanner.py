@@ -176,8 +176,29 @@ def score_launch(mint, verbose=False):
         it_notes.append("no activation timestamp or trace")
     out["components"]["insider_timing"] = {"score": it_score, "notes": it_notes}
 
-    # 4. Sniper overlap (15) — v1.1: replay first N swaps of pool; v1: neutral
-    out["components"]["sniper_overlap"] = {"score": 11, "note": "v1: neutral default"}
+    # 4. Sniper overlap (15) — first buyers still holding
+    try:
+        from sniper_check import sniper_overlap
+        pool_addr = st.get("raw", {}).get("poolAddress")
+        if pool_addr:
+            sn = sniper_overlap(pool_addr, st.get("base_mint"))
+            sn_score = 15
+            ratio = sn.get("ratio")
+            notes = []
+            if ratio is None:
+                notes.append(sn.get("note", "no data"))
+                sn_score = 11  # neutral default
+            else:
+                # still-holding ratio: HIGH = loyal holders (good), LOW = snipers cashed out (bad)
+                if ratio >= 0.6: notes.append(f"{sn['still_holding']}/{sn['checked']} first buyers still holding (loyal)")
+                elif ratio >= 0.3: sn_score = 9; notes.append(f"{sn['still_holding']}/{sn['checked']} still holding (mixed)")
+                else: sn_score = 4; notes.append(f"only {sn['still_holding']}/{sn['checked']} still holding (snipers cashed out)")
+            if sn.get("unknown"): notes.append(f"{sn['unknown']} wallets unresolvable")
+            out["components"]["sniper_overlap"] = {"score": sn_score, "ratio": ratio, "notes": notes}
+        else:
+            out["components"]["sniper_overlap"] = {"score": 11, "note": "pool address unavailable"}
+    except Exception as e:
+        out["components"]["sniper_overlap"] = {"score": 11, "note": f"sniper check failed: {e}"}
 
     # 5. Contract basics (15)
     cb = contract_basics(mint)
