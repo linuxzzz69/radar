@@ -87,12 +87,30 @@ def summarize_transfer(tx):
     if not tx: return None
     msg = tx["transaction"]["message"]
     keys = [k["pubkey"] if isinstance(k, dict) else k for k in msg["accountKeys"]]
-    pre = tx.get("meta", {}).get("preBalances") or []
-    post = tx.get("meta", {}).get("postBalances") or []
+    meta = tx.get("meta") or {}
+    pre = meta.get("preBalances") or []
+    post = meta.get("postBalances") or []
     if len(pre) != len(post) or not pre: return None
     deltas = [(keys[i], (b - a) / 1e9) for i, (a, b) in enumerate(zip(pre, post))
               if i < len(keys) and abs(b - a) >= 1_000_000]
-    return {"fee_payer": keys[0], "deltas": deltas, "err": (tx.get("meta") or {}).get("err")}
+    # SPL token deltas per owner (detect token buys/sells)
+    tok_delta = {}
+    for b in (meta.get("preTokenBalances") or []):
+        o = b.get("owner")
+        if o: tok_delta.setdefault(o, {})["pre"] = (b.get("mint"), int(b["uiTokenAmount"]["amount"]))
+    for b in (meta.get("postTokenBalances") or []):
+        o = b.get("owner")
+        if o:
+            mint, amt = b.get("mint"), int(b["uiTokenAmount"]["amount"])
+            e = tok_delta.setdefault(o, {})
+            if "pre" in e and e["pre"][0] == mint:
+                d = amt - e["pre"][1]
+                if abs(d) > 0: e["tok_delta"] = (mint, d)
+            else:
+                e["tok_delta"] = (mint, amt)
+    token_moves = [(o, v[0], v[1]) for o, v in tok_delta.items() if "tok_delta" in v]
+    return {"fee_payer": keys[0], "deltas": deltas, "token_moves": token_moves,
+            "sig_full": tx.get("transaction", {}).get("signatures", [None])[0], "err": meta.get("err")}
 
 # ---------------- token analysis ----------------
 
@@ -300,16 +318,27 @@ def radar_loop(tg, chat):
                         tg_send(tg["token"], chat,
                                 f"{icon} <b>{w['label']}</b> funded child\n"
                                 f"💰 {rd:.2f} SOL -> <code>{rk[:8]}..{rk[-6:]}</code>\n"
-                                f"solscan.io/tx/{s['signature'][:24]}..")
+                                f"https://solscan.io/tx/{s['signature']}")
                         print(f"alert: {icon} {rd:.2f} SOL -> {rk[:8]}..")
                 elif typ == "smart":
+                    sig_full = info.get("sig_full") or s["signature"]
+                    # token side of the trade for the watched wallet
+                    tok_info = ""
+                    for (owner, mint, delta) in info.get("token_moves", []):
+                        if owner == addr and abs(delta) > 0:
+                            side = "BOUGHT" if delta > 0 else "SOLD"
+                            tok_info = f"{side} {abs(delta)/1e6:.1f}M of {mint[:6]}..{mint[-4:]}"
+                            break
                     for k, d in info["deltas"]:
                         if k == addr and abs(d) >= w.get("min_sol_out", 1.0):
-                            tag = "BUY?" if d < 0 else "SELL?"
+                            tag = "BUY" if d < 0 else "SELL"
+                            body_txt = tok_info if tok_info else f"{d:+.2f} SOL moved"
                             tg_send(tg["token"], chat,
-                                    f"👁 <b>{w['label']}</b> {tag} {d:+.2f} SOL\n"
-                                    f"solscan.io/account/{addr[:8]}..")
-                            print(f"alert: {tag} {d:+.2f}")
+                                    f"👁 <b>{w['label']}</b> {tag}\n"
+                                    f"{body_txt}\n"
+                                    f"SOL delta: {d:+.2f}\n"
+                                    f"https://solscan.io/tx/{sig_full}")
+                            print(f"alert: {w['label']} {tag} {d:+.2f} {tok_info}")
             time.sleep(1.5)
         if time.time() - last_heartbeat > 20 * 3600:
             last_heartbeat = time.time()
