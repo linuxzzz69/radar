@@ -224,12 +224,52 @@ def handle_command(tg, chat, text, state):
     if text.startswith("/help") or text == "/start":
         tg_send(tg["token"], chat,
                 "🤖 <b>linuxz69 radar</b>\n"
-                "Send a token CA -> full scan + insider trace\n"
+                "Send a token CA -> scan + trace + trade panel\n"
                 "Send a wallet -> quick look\n"
+                "/wallet - create trading wallet (once)\n"
+                "/export - show private key ONCE (backup it!)\n"
+                "/balance - bot wallet SOL balance\n"
                 "/status - radar health\n"
                 "/add <addr> <label> <funder|smart> [min_sol]\n"
                 "/remove <addr>\n"
-                "/help - this menu")
+                "/help - this menu\n"
+                "⚠️ trading wallet = hot wallet. Fund only what you can lose.")
+    elif text.startswith("/wallet"):
+        try:
+            from trading_bot import create_wallet, wallet_exists, load_wallet
+            if wallet_exists():
+                _, pub = load_wallet()
+                tg_send(tg["token"], chat, f"✅ wallet already exists\n📍 <code>{pub}</code>\nFund it with SOL to enable buys.")
+            else:
+                r = create_wallet()
+                tg_send(tg["token"], chat,
+                        f"🆕 <b>Trading wallet created</b>\n📍 <code>{r['pubkey']}</code>\n\n"
+                        f"1. Fund it with SOL (send from your main wallet)\n"
+                        f"2. Then send any CA to trade\n"
+                        f"3. /export to back up the private key ONCE")
+        except Exception as e:
+            tg_send(tg["token"], chat, f"wallet error: {e}")
+    elif text.startswith("/export"):
+        try:
+            from trading_bot import load_wallet
+            kp, pub = load_wallet()
+            import base58 as b58
+            priv = b58.b58encode(bytes(kp)).decode()
+            tg_send(tg["token"], chat,
+                    f"🚨 <b>PRIVATE KEY — BACK THIS UP NOW, THEN DELETE THIS MESSAGE</b>\n\n"
+                    f"<code>{priv}</code>\n\n"
+                    f"Anyone with this key owns the wallet. Save it in a password "
+                    f"manager or write it on paper. Never share. Never screenshot.")
+        except Exception as e:
+            tg_send(tg["token"], chat, "no wallet yet. /wallet first")
+    elif text.startswith("/balance"):
+        try:
+            from trading_bot import load_wallet, sol_balance
+            _, pub = load_wallet()
+            sol = sol_balance(pub)
+            tg_send(tg["token"], chat, f"📍 <code>{pub}</code>\n💰 SOL: {sol:.4f}")
+        except Exception:
+            tg_send(tg["token"], chat, "no wallet yet. /wallet first")
     elif text.startswith("/status"):
         cfg = load(CFG_PATH, {})
         up = (time.time() - START_TS) / 3600
@@ -258,6 +298,28 @@ def handle_command(tg, chat, text, state):
         tg_send(tg["token"], chat, f"🗑 removed <code>{addr[:8]}..</code>")
     elif BASE58.match(text):
         threading.Thread(target=analyze_token, args=(tg, chat, text), daemon=True).start()
+        def send_trade_panel(ca):
+            time.sleep(2)
+            try:
+                from trading_bot import wallet_exists, load_wallet, sol_balance
+                if not wallet_exists():
+                    tg_send(tg["token"], chat,
+                            f"⚡ <b>Trading</b>: no wallet yet. /wallet to create one, fund it, then resend the CA for the trade panel.")
+                    return
+                _, pub = load_wallet()
+                sol = sol_balance(pub)
+                b05 = f"https://jup.ag/swap/SOL-{ca}?amount=0.05"
+                b10 = f"https://jup.ag/swap/SOL-{ca}?amount=0.1"
+                b25 = f"https://jup.ag/swap/SOL-{ca}?amount=0.25"
+                sell = f"https://jup.ag/swap/{ca}-SOL"
+                tg_send(tg["token"], chat,
+                        f"⚡ <b>TRADE PANEL</b> — <code>{pub[:8]}..</code> ({sol:.3f} SOL)\n"
+                        f"🟢 <a href=\"{b05}\">Buy 0.05 SOL</a> | <a href=\"{b10}\">Buy 0.1</a> | <a href=\"{b25}\">Buy 0.25</a>\n"
+                        f"🔴 <a href=\"{sell}\">Sell (pick % in Jupiter)</a>\n"
+                        f"(your wallet signs — bot never touches main funds)")
+            except Exception as e:
+                tg_send(tg["token"], chat, f"trade panel error: {e}")
+        threading.Thread(target=send_trade_panel, args=(text,), daemon=True).start()
     else:
         tg_send(tg["token"], chat, "🤔 not a command. Send a Solana CA or /help")
 
