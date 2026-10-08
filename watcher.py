@@ -186,16 +186,7 @@ def analyze_token(tg, chat, ca, top_n=8):
     if not dex and not rug:
         tg_send(tg["token"], chat, f"❌ <code>{ca[:12]}..</code> — no DexScreener/RugCheck data. Invalid CA?")
         return
-    # Jupiter quick-trade links (wallet signs, bot never holds keys)
-    buy_05 = f"https://jup.ag/swap/SOL-{ca}?amount=0.05"
-    buy_10 = f"https://jup.ag/swap/SOL-{ca}?amount=0.1"
-    sell_link = f"https://jup.ag/swap/{ca}-SOL"
-    trade_block = (
-        f"\n⚡ <b>Quick Trade</b> (opens Jupiter, YOUR wallet signs):\n"
-        f"🟢 <a href=\"{buy_05}\">Buy 0.05 SOL</a> | "
-        f"<a href=\"{buy_10}\">Buy 0.1 SOL</a>\n"
-        f"🔴 <a href=\"{sell_link}\">Sell (pick % in Jupiter)</a>\n"
-    )
+    # (trade panel with inline buttons sent separately after the scan)
     if dex:
         s = dex
         msg = (f"🔍 <b>{esc(s['symbol'])}</b> | {esc(s['dex'])}\n"
@@ -210,7 +201,6 @@ def analyze_token(tg, chat, ca, top_n=8):
                 f"insiders {rug['insiders']} | creator {rug['creator']:.2f}% | holders {rug['holders']}\n")
     if dex and (dex['vol24'] or 0) < 50_000:
         msg += "⚠️ volume under $50K — radar signal weak\n"
-    msg += trade_block
     msg += "\n🧵 tracing funding ancestors (top %d)..." % top_n
     tg_send(tg["token"], chat, msg)
     try:
