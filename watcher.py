@@ -237,18 +237,22 @@ def handle_command(tg, chat, text, state):
     elif text.startswith("/wallet"):
         try:
             from trading_bot import create_wallet, wallet_exists, load_wallet
-            if wallet_exists():
-                _, pub = load_wallet()
-                tg_send(tg["token"], chat, f"✅ wallet already exists\n📍 <code>{pub}</code>\nFund it with SOL to enable buys.")
-            else:
-                r = create_wallet()
-                tg_send(tg["token"], chat,
-                        f"🆕 <b>Trading wallet created</b>\n📍 <code>{r['pubkey']}</code>\n\n"
-                        f"1. Fund it with SOL (send from your main wallet)\n"
-                        f"2. Then send any CA to trade\n"
-                        f"3. /export to back up the private key ONCE")
-        except Exception as e:
-            tg_send(tg["token"], chat, f"wallet error: {e}")
+        except ImportError as ie:
+            tg_send(tg["token"], chat,
+                    f"⚠️ trading module needs setup on the server:\n"
+                    f"pip3 install solders base58 --break-system-packages\n"
+                    f"then: systemctl restart radar\n({ie})")
+            return
+        if wallet_exists():
+            _, pub = load_wallet()
+            tg_send(tg["token"], chat, f"✅ wallet already exists\n📍 <code>{pub}</code>\nFund it with SOL to enable buys.")
+        else:
+            r = create_wallet()
+            tg_send(tg["token"], chat,
+                    f"🆕 <b>Trading wallet created</b>\n📍 <code>{r['pubkey']}</code>\n\n"
+                    f"1. Fund it with SOL (send from your main wallet)\n"
+                    f"2. Then send any CA to trade\n"
+                    f"3. /export to back up the private key ONCE")
     elif text.startswith("/export"):
         try:
             from trading_bot import load_wallet
