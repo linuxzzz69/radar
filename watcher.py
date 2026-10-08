@@ -345,7 +345,14 @@ def handle_callback(tg, chat, cb_id, data):
     tg_answer_callback(tg["token"], cb_id, "executing...")
     try:
         parts = data.split(":")
-        action, val, ca = parts[0], parts[1], parts[2]
+        action, val = parts[0], parts[1]
+        ca = parts[2] if len(parts) > 2 else None
+        if action == "wallet":
+            handle_command(tg, chat, "/wallet", None)
+            return
+        if action == "balance":
+            handle_command(tg, chat, "/balance", None)
+            return
         from trading_bot import wallet_exists, load_wallet, do_buy, do_sell, token_balance
         if not wallet_exists():
             tg_send(tg["token"], chat, "❌ no trading wallet. /wallet first")
