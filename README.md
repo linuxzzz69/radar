@@ -44,3 +44,13 @@ python3 dbc_scanner.py <TOKEN_BASE_MINT>
 - Python 3.10+, Node 18+
 
 Nothing here is financial advice. The contract can't rug you. The holders can. Radar reads the holders.
+
+## Trading module (bot v4)
+
+The Telegram bot can create a dedicated trading wallet (`/wallet`), export its key once (`/export`), and show buy/sell panels on every CA scan. Wallet keys are local files (0600, gitignored).
+
+VPS setup for trading:
+```bash
+cd /opt/radar && python3 -m venv .venv
+.venv/bin/pip install solders base58
+```
