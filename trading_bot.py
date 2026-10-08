@@ -71,15 +71,15 @@ def jup_quote(in_mint, out_mint, amount_raw):
         return None
 
 def jup_swap_tx(keypair, in_mint, out_mint, amount_raw):
-    """Build + sign a Jupiter swap tx. Returns serialized tx (base64) or None."""
+    """Build a Jupiter swap tx and return it UNSIGNED-ready (bot signs)."""
     q = jup_quote(in_mint, out_mint, amount_raw)
-    if not q: return None, "no route"
+    if not q: return None, "no route found"
     body = json.dumps({
         "quoteResponse": q,
         "userPublicKey": str(keypair.pubkey()),
         "wrapAndUnwrapSol": True,
         "dynamicComputeUnitLimit": True,
-        "prioritizationFeeLamports": {"priorityLevelWithMaxLamports": {"maxLamports": 1000000, "priorityLevel": "high"}}
+        "prioritizationFeeLamports": {"priorityLevelWithMaxLamports": {"maxLamports": 2000000, "priorityLevel": "high"}}
     }).encode()
     req = urllib.request.Request(JUP_SWAP, data=body, headers=UA)
     try:
@@ -87,20 +87,52 @@ def jup_swap_tx(keypair, in_mint, out_mint, amount_raw):
     except Exception as e:
         return None, f"swap api: {e}"
     b64 = swap.get("swapTransaction")
-    if not b64: return None, "no swapTransaction"
-    try:
-        from solders.transaction import VersionedTransaction
-        import base64 as b64mod
-        raw = b64mod.b64decode(b64)
-        # VersionedTransaction.deserialize expects message + sigs; use the SDK pattern:
-        # simplest: sign by deserializing then re-signing
-        from solders.message import VersionedMessage
-        msg = VersionedMessage.deserialize(raw) if hasattr(VersionedMessage, "deserialize") else None
-        # fallback: use solders' Transaction utilities
-        # NOTE: exact sign flow depends on solders version; test on VPS
-        return b64, q
-    except Exception as e:
-        return None, f"sign: {e}"
+    if not b64: return None, "no swapTransaction returned"
+    return b64, q
+
+def sign_and_send(keypair, swap_b64):
+    """Sign the Jupiter swapTransaction with the bot keypair, send, return signature."""
+    import base64 as b64mod
+    from solders.transaction import VersionedTransaction
+    raw = b64mod.b64decode(swap_b64)
+    # deserialize the unsigned tx from its wire format
+    vt = VersionedTransaction.from_bytes(raw)
+    # re-sign with our keypair (Jupiter returns tx with 0 or placeholder sigs)
+    signed = VersionedTransaction(vt.message, [keypair])
+    sig = signed.signatures[0]
+    # send raw signed tx
+    body = json.dumps({"jsonrpc": "2.0", "id": 1, "method": "sendTransaction",
+                       "params": [b64mod.b64encode(bytes(signed)).decode(),
+                                  {"encoding": "base64", "skipPreflight": False, "maxRetries": 3}]}).encode()
+    for url in [RPC, "https://solana-rpc.publicnode.com"]:
+        try:
+            r = json.load(urllib.request.urlopen(urllib.request.Request(url, data=body, headers=UA), timeout=25))
+            if "error" in r:
+                last = r["error"]; continue
+            return r.get("result"), None
+        except Exception as e:
+            last = str(e); continue
+    return None, str(last)
+
+def do_buy(out_mint, sol_amount):
+    kp, pub = load_wallet()
+    bal = sol_balance(pub)
+    if bal < sol_amount + 0.01:
+        return None, f"insufficient SOL: {bal:.3f} (need {sol_amount} + fees)"
+    b64, q = jup_swap_tx(kp, SOL_MINT, out_mint, int(sol_amount * 1e9))
+    if not b64: return None, q
+    sig, err = sign_and_send(kp, b64)
+    return sig, err
+
+def do_sell(mint, pct):
+    kp, pub = load_wallet()
+    total = token_balance(pub, mint)
+    if total <= 0: return None, "no token balance to sell"
+    raw = int(total * pct / 100)
+    b64, q = jup_swap_tx(kp, mint, SOL_MINT, raw)
+    if not b64: return None, q
+    sig, err = sign_and_send(kp, b64)
+    return sig, err
 
 if __name__ == "__main__":
     import sys

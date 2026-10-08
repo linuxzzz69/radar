@@ -316,16 +316,77 @@ def handle_command(tg, chat, text, state):
                 b10 = f"https://jup.ag/swap/SOL-{ca}?amount=0.1"
                 b25 = f"https://jup.ag/swap/SOL-{ca}?amount=0.25"
                 sell = f"https://jup.ag/swap/{ca}-SOL"
-                tg_send(tg["token"], chat,
+                tg_buttons(tg["token"], chat,
                         f"⚡ <b>TRADE PANEL</b> — <code>{pub[:8]}..</code> ({sol:.3f} SOL)\n"
-                        f"🟢 <a href=\"{b05}\">Buy 0.05 SOL</a> | <a href=\"{b10}\">Buy 0.1</a> | <a href=\"{b25}\">Buy 0.25</a>\n"
-                        f"🔴 <a href=\"{sell}\">Sell (pick % in Jupiter)</a>\n"
-                        f"(your wallet signs — bot never touches main funds)")
+                        f"Tap a button — the bot signs and executes instantly.",
+                        [[("🟢 Buy 0.05", f"buy:0.05:{ca}"), ("🟢 Buy 0.1", f"buy:0.1:{ca}"),
+                          ("🟢 Buy 0.25", f"buy:0.25:{ca}")],
+                         [("🔴 Sell 25%", f"sell:25:{ca}"), ("🔴 Sell 50%", f"sell:50:{ca}"),
+                          ("🔴 Sell 100%", f"sell:100:{ca}")]])
             except Exception as e:
                 tg_send(tg["token"], chat, f"trade panel error: {e}")
         threading.Thread(target=send_trade_panel, args=(text,), daemon=True).start()
     else:
         tg_send(tg["token"], chat, "🤔 not a command. Send a Solana CA or /help")
+
+
+def tg_buttons(token, chat, text, buttons, reply_to=None):
+    """buttons: list of (label, callback_data)"""
+    kb = {"inline_keyboard": [[{"text": l, "callback_data": c} for (l, c) in row]
+                               for row in buttons]}
+    data = urllib.parse.urlencode({"chat_id": chat, "text": text, "parse_mode": "HTML",
+                                   "reply_markup": json.dumps(kb)}).encode()
+    try:
+        urllib.request.urlopen(urllib.request.Request(
+            f"https://api.telegram.org/bot{token}/sendMessage", data=data), timeout=15)
+    except Exception as e:
+        print("tg buttons failed:", e)
+
+def tg_answer_callback(token, cb_id, text=None):
+    data = urllib.parse.urlencode({"callback_query_id": cb_id, "text": text or ""}).encode()
+    try:
+        urllib.request.urlopen(urllib.request.Request(
+            f"https://api.telegram.org/bot{token}/answerCallbackQuery", data=data), timeout=10)
+    except Exception:
+        pass
+
+def handle_callback(tg, chat, cb_id, data):
+    """data format: buy:<amount>:<ca>  or  sell:<pct>:<ca>"""
+    tg_answer_callback(tg["token"], cb_id, "executing...")
+    try:
+        parts = data.split(":")
+        action, val, ca = parts[0], parts[1], parts[2]
+        from trading_bot import wallet_exists, load_wallet, do_buy, do_sell, token_balance
+        if not wallet_exists():
+            tg_send(tg["token"], chat, "❌ no trading wallet. /wallet first")
+            return
+        if action == "buy":
+            amt = float(val)
+            tg_send(tg["token"], chat, f"⏳ buying {amt} SOL of <code>{ca[:8]}..</code> ...")
+            kp, pub = load_wallet()
+            from trading_bot import do_buy as _db
+            sig, err = _db(ca, amt)
+            if err:
+                tg_send(tg["token"], chat, f"❌ buy failed: {err}")
+            else:
+                tg_send(tg["token"], chat,
+                        f"✅ <b>BOUGHT</b> {amt} SOL of <code>{ca[:8]}..</code>\n"
+                        f"tx: https://solscan.io/tx/{sig}\n"
+                        f"/balance to check")
+        elif action == "sell":
+            pct = int(val)
+            tg_send(tg["token"], chat, f"⏳ selling {pct}% of <code>{ca[:8]}..</code> ...")
+            sig, err = do_sell(ca, pct)
+            if err:
+                tg_send(tg["token"], chat, f"❌ sell failed: {err}")
+            else:
+                tg_send(tg["token"], chat,
+                        f"✅ <b>SOLD</b> {pct}% of <code>{ca[:8]}..</code>\n"
+                        f"tx: https://solscan.io/tx/{sig}\n"
+                        f"/balance to check")
+    except Exception as e:
+        tg_send(tg["token"], chat, f"trade error: {e}")
+
 
 def tg_listener(tg, chat):
     offset = load(STATE_PATH, {}).get("tg_offset", 0)
@@ -335,6 +396,18 @@ def tg_listener(tg, chat):
             ups = json.load(urllib.request.urlopen(urllib.request.Request(url), timeout=15)).get("result", [])
             for u in ups:
                 offset = u["update_id"] + 1
+                if "callback_query" in u:
+                    cb = u["callback_query"]
+                    cid = (cb.get("message") or {}).get("chat", {}).get("id")
+                    cdata = cb.get("data") or ""
+                    cbid = cb.get("id")
+                    if str(cid) == str(chat) and cdata:
+                        threading.Thread(target=handle_callback, args=(tg, chat, cbid, cdata), daemon=True).start()
+                    st2 = load(STATE_PATH, {})
+                    st2["tg_offset"] = u["update_id"] + 1
+                    save(STATE_PATH, st2)
+                    offset = u["update_id"] + 1
+                    continue
                 m = u.get("message") or {}
                 cid = (m.get("chat") or {}).get("id")
                 txt = m.get("text") or ""
