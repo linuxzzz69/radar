@@ -614,12 +614,16 @@ def handle_command(tg, chat, text, state):
                 return
         tg_send(tg["token"], chat, "wallet not in watch list")
     elif text.startswith("/heart-attack"):
-        # usage: /heart-attack <DLMM_PAIR_ADDRESS> (from meteora.ag/dlmm/...)
+        # usage: /heart-attack <token CA OR DLMM pair address>
         try:
-            pair = text.split()[1]
-            threading.Thread(target=ha_panel, args=(tg, chat, pair), daemon=True).start()
+            addr = text.split()[1]
+            # auto-resolve: if it's a token CA, find the DLMM pair via DexScreener
+            if "pump" in addr or len(addr) == 44:
+                threading.Thread(target=ha_resolve_and_panel, args=(tg, chat, addr), daemon=True).start()
+            else:
+                threading.Thread(target=ha_panel, args=(tg, chat, addr), daemon=True).start()
         except Exception as e:
-            tg_send(tg["token"], chat, "usage: /heart-attack <DLMM pair address>")
+            tg_send(tg["token"], chat, f"usage: /heart-attack <token CA or pair address> ({e})")
     elif text.startswith("/mirror "):
         try:
             w = text.split()[1]
@@ -988,6 +992,36 @@ def ha_post(path, body):
     data = json.dumps(body).encode()
     req = urllib.request.Request(f"{HA_SERVICE}{path}", data=data, headers={"User-Agent": "Mozilla/5.0", "Content-Type": "application/json"})
     return json.load(urllib.request.urlopen(req, timeout=60))
+
+
+def ha_resolve_and_panel(tg, chat, ca_or_pair):
+    """Resolve a token CA to its best DLMM pair, then show the HA panel."""
+    tg_send(tg["token"], chat, "❤️ resolving DLMM pool...")
+    try:
+        dd = get_json(f"https://api.dexscreener.com/latest/dex/tokens/{ca_or_pair}")
+        ps = dd.get("pairs") or []
+        # find meteora DLMM pairs with real liquidity
+        dlmm_pools = [p for p in ps if "meteora" in str(p.get("dexId","")).lower()
+                      and "DLMM" in str(p.get("labels") or [])
+                      and ((p.get("liquidity") or {}).get("usd") or 0) > 5_000]
+        if not dlmm_pools:
+            tg_send(tg["token"], chat,
+                    f"❌ no active DLMM pool found for this token.\n"
+                    f"Only pumpswap/pump.fun pools exist - Heart Attack needs a Meteora DLMM pool.\n"
+                    f"Check meteora.ag to see if a DLMM pool exists for this token.")
+            return
+        # pick the biggest DLMM pool
+        best = max(dlmm_pools, key=lambda p:(p.get('liquidity') or {}).get('usd',0))
+        pair = best["pairAddress"]
+        liq = round(((best.get('liquidity') or {}).get('usd') or 0)/1e3,1)
+        vol = round(((best.get('volume') or {}).get('h24') or 0)/1e3,1)
+        tg_send(tg["token"], chat,
+                f"✅ DLMM pool found: <code>{pair[:10]}..</code>\n"
+                f"liq ${liq}K | vol24 ${vol}K")
+        ha_panel(tg, chat, pair)
+    except Exception as e:
+        tg_send(tg["token"], chat, f"❤️ resolve error: {e}")
+
 
 def ha_panel(tg, chat, pair):
     """Heart Attack setup: pool info + size buttons."""
