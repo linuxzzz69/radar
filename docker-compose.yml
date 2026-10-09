@@ -11,7 +11,7 @@ services:
       - ./watch_config.json:/app/watch_config.json:ro      # secrets/state stay OUTSIDE the image
       - ./watcher_state.json:/app/watcher_state.json
       - ./.bot_wallet.json:/app/.bot_wallet.json:ro        # hot wallet key (mounted, never baked)
-      - ./watcher.log:/app/watcher.log
+      # log lives INSIDE the container; view with: docker compose logs -f radar-watcher
     healthcheck:
       test: ["CMD-SHELL", "python3 -c \"import urllib.request;urllib.request.urlopen('https://api.telegram.org',timeout=10)\""]
       interval: 120s
