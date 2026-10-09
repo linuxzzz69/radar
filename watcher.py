@@ -42,11 +42,27 @@ def load(p, default):
     return default
 
 def save(p, obj):
-    # atomic write: tmp file + rename prevents interleaved-write corruption
-    tmp = p + ".tmp"
-    with open(tmp, "w") as f:
-        json.dump(obj, f, indent=1)
-    os.replace(tmp, p)
+    # NOTE: p may be a Docker-mounted file (single-file bind mount).
+    # os.replace()/rename over a bind-mount target raises EBUSY, so we
+    # write in-place with a process-local lock to avoid interleaved writes.
+    import threading
+    global _save_lock
+    try:
+        _save_lock
+    except NameError:
+        _save_lock = threading.Lock()
+    with _save_lock:
+        tmp = p + ".tmp"
+        with open(tmp, "w") as f:
+            json.dump(obj, f, indent=1)
+        try:
+            os.replace(tmp, p)          # works on normal paths
+        except OSError:
+            # bind-mounted file: rewrite in place instead of renaming
+            with open(p, "w") as f:
+                json.dump(obj, f, indent=1)
+            try: os.remove(tmp)
+            except Exception: pass
 
 def rpc(method, params, url=RPC):
     body = json.dumps({"jsonrpc": "2.0", "id": 1, "method": method, "params": params}).encode()
