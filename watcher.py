@@ -111,7 +111,8 @@ def summarize_transfer(tx):
             if d != 0: e["tok_delta"] = (mint, d)
         else:
             e["tok_delta"] = (mint, amt)
-    token_moves = [(str(o), v[0], v[1]) for o, v in tok_delta.items() if "tok_delta" in v]
+    token_moves = [(str(o), v["tok_delta"][0], v["tok_delta"][1])
+                   for o, v in tok_delta.items() if "tok_delta" in v]
     return {"fee_payer": keys[0], "deltas": deltas, "token_moves": token_moves,
             "sig_full": tx.get("transaction", {}).get("signatures", [None])[0], "err": meta.get("err")}
 
