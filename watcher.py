@@ -427,7 +427,7 @@ def handle_callback(tg, chat, cb_id, data):
             tg_send(tg["token"], chat, f"⏳ buying {amt} SOL of <code>{ca[:8]}..</code> ...")
             kp, pub = load_wallet()
             from trading_bot import do_buy, sol_balance as _sol_balance
-            sig, err = _db(ca, amt)
+            sig, err = do_buy(ca, amt)
             if err and "insufficient" in str(err):
                 kp2, pub2 = load_wallet()
                 bal = _sol_balance(pub2)
@@ -448,6 +448,7 @@ def handle_callback(tg, chat, cb_id, data):
         elif action == "sell":
             pct = int(val)
             tg_send(tg["token"], chat, f"⏳ selling {pct}% of <code>{ca[:8]}..</code> ...")
+            from trading_bot import do_sell
             sig, err = do_sell(ca, pct)
             if err:
                 tg_send(tg["token"], chat, f"❌ sell failed: {err}")
