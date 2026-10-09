@@ -7,7 +7,6 @@ on:
       - "**.md"
       - "reply-style.md"
 
-  # manual trigger from GitHub UI
   workflow_dispatch:
 
 jobs:
@@ -24,12 +23,12 @@ jobs:
           script: |
             cd /opt/radar
             git pull origin master
-            systemctl restart radar
+            docker compose up -d --build
             sleep 3
-            if systemctl is-active --quiet radar; then
-              echo "DEPLOY OK: radar active"
+            if docker compose ps --status running | grep -q radar-watcher; then
+              echo "DEPLOY OK: radar-watcher running"
             else
-              echo "DEPLOY FAILED: radar not active"
-              journalctl -u radar -n 20 --no-pager
+              echo "DEPLOY FAILED: radar-watcher not running"
+              docker compose logs --tail 20 radar-watcher
               exit 1
             fi
