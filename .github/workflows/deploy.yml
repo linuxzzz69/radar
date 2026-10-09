@@ -25,24 +25,23 @@ jobs:
             cd /opt/radar
             git pull --rebase origin master
 
-            # rebuild image (no-cache for the code layer to avoid stale COPY cache)
+            docker compose down
             docker compose build radar-watcher
-
-            # recreate containers
             docker compose up -d --force-recreate
 
-            sleep 5
+            sleep 8
 
-            # health check: watcher alive + log line clean
             if ! docker compose ps --status running | grep -q radar-watcher; then
               echo "DEPLOY FAILED: radar-watcher not running"
               docker compose logs --tail 30 radar-watcher
               exit 1
             fi
-            if docker compose logs --tail 30 radar-watcher 2>/dev/null | grep -q "Traceback (most recent call last)"; then
-              echo "DEPLOY FAILED: traceback in watcher logs"
+
+            # new logs only (down/up cleared history). Check the CURRENT run for a startup crash:
+            if docker compose logs radar-watcher 2>/dev/null | grep -q "Traceback (most recent call last)"; then
+              echo "DEPLOY FAILED: traceback in watcher startup"
               docker compose logs --tail 30 radar-watcher
               exit 1
             fi
 
-            echo "DEPLOY OK: $(git log --oneline -1) | containers running"
+            echo "DEPLOY OK: $(git log --oneline -1) | containers running, watcher clean"
