@@ -1,13 +1,12 @@
-version: "3.8"
-
 services:
   # Telegram radar + trading bot (watcher.py)
   radar-watcher:
     build: .
     container_name: radar-watcher
     restart: always
-    env_file:
-      - .env            # RPC_URL etc (optional)
+    # env_file removed: .env is OPTIONAL, uncomment if you set one
+    # env_file:
+    #   - .env
     volumes:
       - ./watch_config.json:/app/watch_config.json:ro      # secrets/state stay OUTSIDE the image
       - ./watcher_state.json:/app/watcher_state.json
