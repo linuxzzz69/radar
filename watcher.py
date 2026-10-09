@@ -32,11 +32,21 @@ START_TS = time.time()
 
 def load(p, default):
     if os.path.exists(p):
-        with open(p) as f: return json.load(f)
+        try:
+            with open(p) as f: return json.load(f)
+        except json.JSONDecodeError:
+            # corrupt (e.g. interleaved writes from two processes) - back it up, start fresh
+            try: os.rename(p, p + ".corrupt." + str(int(time.time())))
+            except Exception: pass
+            return default
     return default
 
 def save(p, obj):
-    with open(p, "w") as f: json.dump(obj, f, indent=1)
+    # atomic write: tmp file + rename prevents interleaved-write corruption
+    tmp = p + ".tmp"
+    with open(tmp, "w") as f:
+        json.dump(obj, f, indent=1)
+    os.replace(tmp, p)
 
 def rpc(method, params, url=RPC):
     body = json.dumps({"jsonrpc": "2.0", "id": 1, "method": method, "params": params}).encode()
