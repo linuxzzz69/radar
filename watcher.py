@@ -716,8 +716,16 @@ def handle_command(tg, chat, text, state):
         cfg["watch"] = [x for x in cfg.get("watch", []) if x["address"] != addr]
         save(CFG_PATH, cfg)
         tg_send(tg["token"], chat, f"🗑 removed <code>{addr[:8]}..</code>")
+    elif "meteora.ag/dlmm/" in text:
+        import re as _re
+        m2 = _re.search(r"dlmm/([1-9A-HJ-NP-Za-km-z]{32,44})", text)
+        if m2:
+            tg_send(tg["token"], chat, f"❤️ DLMM pair detected: <code>{m2.group(1)[:10]}..</code>")
+            threading.Thread(target=ha_panel, args=(tg, chat, m2.group(1)), daemon=True).start()
+        else:
+            tg_send(tg["token"], chat, "couldn't extract pair address from that link")
     elif ("jup.ag" in text or "dexscreener.com" in text or "gmgn.ai" in text
-          or "pump.fun" in text or "meteora.ag" in text):
+          or "pump.fun" in text):
         # extract mint from URL-style paste
         import re as _re
         m2 = _re.search(r"(?:tokens|token|swap[/SOL-]*|dlmm[/]|pairs[/solana/])/?([1-9A-HJ-NP-Za-km-z]{32,44})", text)
@@ -998,6 +1006,13 @@ def ha_post(path, body):
 
 def ha_resolve_and_panel(tg, chat, ca_or_pair):
     """Resolve a token CA to its best DLMM pair, then show the HA panel."""
+    # if it's already a pair address (from meteora.ag URL), use directly
+    if "meteora.ag" in ca_or_pair or "dlmm" in ca_or_pair.lower():
+        import re as _re
+        m2 = _re.search(r"dlmm/([1-9A-HJ-NP-Za-km-z]{32,44})", ca_or_pair)
+        if m2:
+            ha_panel(tg, chat, m2.group(1))
+            return
     tg_send(tg["token"], chat, "❤️ resolving DLMM pool...")
     try:
         dd = get_json(f"https://api.dexscreener.com/latest/dex/tokens/{ca_or_pair}")
