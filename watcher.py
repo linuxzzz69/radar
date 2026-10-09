@@ -319,6 +319,13 @@ def handle_command(tg, chat, text, state):
         save(CFG_PATH, cfg)
         tg_send(tg["token"], chat, f"🗑 removed <code>{addr[:8]}..</code>")
     elif BASE58.match(text):
+        cfg_w = load(CFG_PATH, {}) or {}
+        watched = {w["address"] for w in cfg_w.get("watch", [])}
+        if text in watched:
+            tg_send(tg["token"], chat,
+                    f"👁 <code>{text[:8]}..{text[-4:]}</code> is a <b>watched wallet</b>, not a token CA.\n"
+                    f"Send a token contract address to scan/trade. This wallet is on your watch list.")
+            return
         threading.Thread(target=analyze_token, args=(tg, chat, text), daemon=True).start()
         def send_trade_panel(ca):
             try:
@@ -390,6 +397,13 @@ def tg_answer_callback(token, cb_id, text=None):
 
 def handle_callback(tg, chat, cb_id, data):
     """data format: buy:<amount>:<ca>  or  sell:<pct>:<ca>"""
+    st = load(STATE_PATH, {})
+    seen_cbs = st.get("seen_callbacks", [])
+    if cb_id in seen_cbs:
+        return  # dedupe Telegram retries
+    seen_cbs.append(cb_id)
+    st["seen_callbacks"] = seen_cbs[-50:]
+    save(STATE_PATH, st)
     tg_answer_callback(tg["token"], cb_id, "executing...")
     try:
         parts = data.split(":")
@@ -412,11 +426,11 @@ def handle_callback(tg, chat, cb_id, data):
             amt = float(val)
             tg_send(tg["token"], chat, f"⏳ buying {amt} SOL of <code>{ca[:8]}..</code> ...")
             kp, pub = load_wallet()
-            from trading_bot import do_buy as _db
+            from trading_bot import do_buy, sol_balance as _sol_balance
             sig, err = _db(ca, amt)
             if err and "insufficient" in str(err):
                 kp2, pub2 = load_wallet()
-                bal = sol_balance(pub2)
+                bal = _sol_balance(pub2)
                 tg_buttons(tg["token"], chat,
                         f"💰 <b>Fund the wallet to enable trading</b>\n"
                         f"<code>{pub2}</code>\n"
