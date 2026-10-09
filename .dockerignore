@@ -1,0 +1,10 @@
+.git
+.venv
+node_modules
+__pycache__
+*.pyc
+watcher.log
+.env
+.bot_wallet.json
+watch_config.json
+watcher_state.json
