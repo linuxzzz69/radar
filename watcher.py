@@ -1052,7 +1052,14 @@ def ha_panel(tg, chat, pair):
             [[("❤️ 0.05 SOL", f"ha_open:0.05:{pair}"), ("❤️ 0.1 SOL", f"ha_open:0.1:{pair}")],
              [("❤️ 0.25 SOL", f"ha_open:0.25:{pair}"), ("❌ cancel", f"noop:0")]])
     except Exception as e:
-        tg_send(tg["token"], chat, f"❤️ pool error: {e}\n(Is the DLMM pool address correct? Use the pair address from meteora.ag, not the token CA)")
+        err_str = str(e)
+        if "500" in err_str:
+            tg_send(tg["token"], chat,
+                    f"❤️ pool error: the DLMM pool has no liquidity at the active bin (dead or drained pool).\n"
+                    f"This pool cannot be traded. Check the pool on meteora.ag to verify.\n"
+                    f"Try a different pool or a different token.")
+        else:
+            tg_send(tg["token"], chat, f"❤️ pool error: {err_str}")
 
 def ha_open(tg, chat, pair, sol_amount):
     tg_send(tg["token"], chat, f"❤️ opening Heart Attack position ({sol_amount} SOL, Curve 5 bins)...")
