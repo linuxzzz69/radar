@@ -95,12 +95,11 @@ def sign_and_send(keypair, swap_b64):
     import base64 as b64mod
     from solders.transaction import VersionedTransaction
     raw = b64mod.b64decode(swap_b64)
-    # deserialize the unsigned tx from its wire format
     vt = VersionedTransaction.from_bytes(raw)
-    # re-sign with our keypair (Jupiter returns tx with 0 or placeholder sigs)
-    signed = VersionedTransaction(vt.message, [keypair])
-    sig = signed.signatures[0]
-    # send raw signed tx
+    # sign: keypair.sign_message(vt.message) -> Signature, then reassemble
+    sig = keypair.sign_message(vt.message)
+    signed = VersionedTransaction(vt.message, [sig])
+    # send the signed tx
     body = json.dumps({"jsonrpc": "2.0", "id": 1, "method": "sendTransaction",
                        "params": [b64mod.b64encode(bytes(signed)).decode(),
                                   {"encoding": "base64", "skipPreflight": False, "maxRetries": 3}]}).encode()
@@ -114,25 +113,32 @@ def sign_and_send(keypair, swap_b64):
             last = str(e); continue
     return None, str(last)
 
+def jup_swap_with_retry(keypair, in_mint, out_mint, amount_raw, retries=3):
+    """Full swap with Jupiter API retry (lite-api flaps 502/503)."""
+    last = None
+    for i in range(retries):
+        b64, err = jup_swap_tx(keypair, in_mint, out_mint, amount_raw)
+        if b64:
+            return sign_and_send(keypair, b64)
+        last = err
+        if err and ("502" in str(err) or "503" in str(err) or "unavailable" in str(err).lower()):
+            time.sleep(3 * (i + 1)); continue
+        break
+    return None, last
+
 def do_buy(out_mint, sol_amount):
     kp, pub = load_wallet()
     bal = sol_balance(pub)
     if bal < sol_amount + 0.01:
         return None, f"insufficient SOL: {bal:.3f} (need {sol_amount} + fees)"
-    b64, q = jup_swap_tx(kp, SOL_MINT, out_mint, int(sol_amount * 1e9))
-    if not b64: return None, q
-    sig, err = sign_and_send(kp, b64)
-    return sig, err
+    return jup_swap_with_retry(kp, SOL_MINT, out_mint, int(sol_amount * 1e9))
 
 def do_sell(mint, pct):
     kp, pub = load_wallet()
     total = token_balance(pub, mint)
     if total <= 0: return None, "no token balance to sell"
     raw = int(total * pct / 100)
-    b64, q = jup_swap_tx(kp, mint, SOL_MINT, raw)
-    if not b64: return None, q
-    sig, err = sign_and_send(kp, b64)
-    return sig, err
+    return jup_swap_with_retry(kp, mint, SOL_MINT, raw)
 
 if __name__ == "__main__":
     import sys
@@ -257,3 +263,62 @@ def position_pnl(mint):
     pnl_sol = val_sol - p["sol_in"]
     pnl_pct = (pnl_sol / p["sol_in"] * 100) if p["sol_in"] else 0
     return sym, val_sol, pnl_sol, pnl_pct, p["tokens"]
+
+
+# ---------------- trade hardening ----------------
+
+DENY_PATH = os.path.join(BASE, ".denylist.json")   # mints/wallets we never trade
+HIST_PATH = os.path.join(BASE, ".trade_history.json")
+
+def load_deny():
+    try:
+        with open(DENY_PATH) as f: return json.load(f)
+    except Exception:
+        return {"mints": [], "wallets": []}
+
+def is_denied(mint=None, wallet=None):
+    d = load_deny()
+    if mint and mint in d.get("mints", []): return True
+    if wallet and wallet in d.get("wallets", []): return True
+    return False
+
+def log_trade(action, mint, symbol, sol_amount, sig=None, err=None):
+    """Audit trail: every auto-action is logged forever."""
+    d = load(HIST_PATH, {"trades": []})
+    d["trades"].append({
+        "ts": time.time(), "action": action, "mint": mint, "symbol": symbol,
+        "sol": sol_amount, "sig": sig, "error": err
+    })
+    with open(HIST_PATH, "w") as f: json.dump(d, f, indent=1)
+
+def daily_spend():
+    """Total SOL spent on buys in the last 24h (guardrail)."""
+    d = load(HIST_PATH, {"trades": []})
+    day_ago = time.time() - 86400
+    total = sum(t.get("sol", 0) for t in d.get("trades", [])
+                if t.get("ts", 0) > day_ago and t.get("action") == "buy" and not t.get("error"))
+    return total
+
+def hardened_buy(mint, symbol, sol_amount, max_daily=0.5):
+    """do_buy with all guardrails applied. Returns (sig, err)."""
+    if is_denied(mint=mint):
+        log_trade("buy_blocked", mint, symbol, sol_amount, err="deny-listed")
+        return None, "mint is deny-listed"
+    spent = daily_spend()
+    if spent + sol_amount > max_daily:
+        log_trade("buy_blocked", mint, symbol, sol_amount,
+                  err=f"daily cap: {spent:.2f} SOL spent, cap {max_daily}")
+        return None, f"daily spend cap hit ({spent:.2f}/{max_daily} SOL)"
+    sig, err = do_buy(mint, sol_amount)
+    if not err:
+        record_buy(mint, symbol, sol_amount, 0)  # tokens resolved from tx on next /positions refresh
+    log_trade("buy", mint, symbol, sol_amount, sig=sig, err=err)
+    return sig, err
+
+def hardened_sell(mint, symbol, pct):
+    if is_denied(mint=mint):
+        return None, "mint is deny-listed"
+    sig, err = do_sell(mint, pct)
+    record_sell(mint, pct)
+    log_trade("sell", mint, symbol, pct, sig=sig, err=err)
+    return sig, err

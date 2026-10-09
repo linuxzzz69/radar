@@ -507,6 +507,7 @@ def handle_command(tg, chat, text, state):
                 "/pnl <CA> - position audit (smart money status)\n"
                 "/exit <CA> <pct> - what selling X% gets right now\n"
                 "/trail <CA> <pct> - trailing stop from peak\n"
+                "/close <CA> - sell 100% + clear rules\n"
                 "/portfolio - full book card\n"
                 "/mute /unmute <wallet> - alert toggles\n"
                 "(paste a jup/gmgn/dexscreener link - CA auto-extracted)\n"
@@ -617,6 +618,25 @@ def handle_command(tg, chat, text, state):
             threading.Thread(target=mirror_wallet, args=(tg, chat, w), daemon=True).start()
         except Exception as e:
             tg_send(tg["token"], chat, f"usage: /mirror <wallet> ({e})")
+    elif text.startswith("/close "):
+        try:
+            mint = text.split()[1]
+            from trading_bot import hardened_sell, load_positions
+            d = load_positions()
+            if mint not in d:
+                tg_send(tg["token"], chat, "no position in that token")
+                return
+            sym = d[mint].get("symbol","?")
+            sig, err = hardened_sell(mint, sym, 100)
+            if err:
+                tg_send(tg["token"], chat, f"❌ close failed: {err}")
+            else:
+                tg_send(tg["token"], chat,
+                        f"🔒 <b>POSITION CLOSED</b> — {sym}\n"
+                        f"tx: https://solscan.io/tx/{sig}\n"
+                        f"SL/TP rules cleared. /positions to verify.")
+        except Exception as e:
+            tg_send(tg["token"], chat, f"usage: /close <CA> ({e})")
     elif text.startswith("/trail "):
         try:
             parts = text.split()
@@ -820,10 +840,12 @@ def handle_callback(tg, chat, cb_id, data):
         if action == "buy":
             amt = float(val)
             tg_send(tg["token"], chat, f"⏳ buying {amt} SOL of <code>{ca[:8]}..</code> ...")
-            kp, pub = load_wallet()
-            from trading_bot import do_buy, sol_balance as _sol_balance
-            sig, err = do_buy(ca, amt)
-            if err and "insufficient" in str(err):
+            from trading_bot import hardened_buy, sol_balance as _sol_balance
+            dd = get_json(f"https://api.dexscreener.com/latest/dex/tokens/{ca}")
+            ps = dd.get("pairs") or []
+            sym = (max(ps, key=lambda x:(x.get('liquidity') or {}).get('usd',0)).get('baseToken') or {}).get('symbol','?') if ps else '?'
+            sig, err = hardened_buy(ca, sym, amt)
+            if err and ("insufficient" in str(err) or "Fund" in str(err) or "0.000" in str(err)):
                 kp2, pub2 = load_wallet()
                 bal = _sol_balance(pub2)
                 tg_buttons(tg["token"], chat,
@@ -837,19 +859,17 @@ def handle_callback(tg, chat, cb_id, data):
                 tg_send(tg["token"], chat, f"❌ buy failed: {err}")
             else:
                 tg_send(tg["token"], chat,
-                        f"✅ <b>BOUGHT</b> {amt} SOL of <code>{ca[:8]}..</code>\n"
+                        f"✅ <b>BOUGHT</b> {amt} SOL of {sym}\n"
                         f"tx: https://solscan.io/tx/{sig}\n"
                         f"/balance to check")
         elif action == "sell":
             pct = int(val)
             tg_send(tg["token"], chat, f"⏳ selling {pct}% of <code>{ca[:8]}..</code> ...")
-            from trading_bot import do_sell
-            sig, err = do_sell(ca, pct)
+            from trading_bot import hardened_sell
+            sig, err = hardened_sell(ca, "?", pct)
             if err:
                 tg_send(tg["token"], chat, f"❌ sell failed: {err}")
             else:
-                from trading_bot import record_sell
-                record_sell(ca, pct)
                 tg_send(tg["token"], chat,
                         f"✅ <b>SOLD</b> {pct}% of <code>{ca[:8]}..</code>\n"
                         f"tx: https://solscan.io/tx/{sig}\n"
