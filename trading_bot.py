@@ -142,3 +142,62 @@ if __name__ == "__main__":
     elif len(sys.argv) > 1 and sys.argv[1] == "balance":
         _, pub = load_wallet()
         print("SOL:", sol_balance(pub))
+
+
+# ---------------- position tracking ----------------
+
+POS_PATH = os.path.join(BASE, ".bot_positions.json")
+
+def load_positions():
+    try:
+        with open(POS_PATH) as f: return json.load(f)
+    except Exception:
+        return {}
+
+def save_positions(d):
+    with open(POS_PATH, "w") as f: json.dump(d, f, indent=1)
+
+def record_buy(mint, symbol, sol_spent, tokens):
+    d = load_positions()
+    p = d.setdefault(mint, {"symbol": symbol, "sol_in": 0.0, "tokens": 0})
+    p["sol_in"] += sol_spent
+    p["tokens"] += tokens
+    save_positions(d)
+
+def record_sell(mint, pct):
+    d = load_positions()
+    if mint in d:
+        d[mint]["tokens"] = int(d[mint]["tokens"] * (100 - pct) / 100)
+        if d[mint]["tokens"] <= 0:
+            del d[mint]
+        save_positions(d)
+
+def positions_overview():
+    """Build the Positions Overview card with live prices."""
+    d = load_positions()
+    _, pub = load_wallet()
+    lines = []
+    net_sol = sol_balance(pub)
+    for mint, p in d.items():
+        if p["tokens"] <= 0: continue
+        # live price via DexScreener
+        try:
+            dd = get_json(f"https://api.dexscreener.com/latest/dex/tokens/{mint}")
+            ps = dd.get("pairs") or []
+            best = max(ps, key=lambda x: (x.get("liquidity") or {}).get("usd", 0)) if ps else None
+            price_usd = float(best["priceUsd"]) if best and best.get("priceUsd") else 0
+            val_sol = (p["tokens"] * price_usd) / 1e9 if price_usd else 0
+            sym = best["baseToken"]["symbol"] if best else p["symbol"]
+        except Exception:
+            price_usd, val_sol, sym = 0, 0, p["symbol"]
+        pnl_sol = val_sol - p["sol_in"]
+        pnl_pct = (pnl_sol / p["sol_in"] * 100) if p["sol_in"] else 0
+        emoji = "🟢" if pnl_pct >= 0 else "🔴"
+        lines.append(
+            f"/{sym} {emoji}\n"
+            f"PnL: {pnl_pct:+.1f}% / {pnl_sol:+.4f} SOL\n"
+            f"Value: ${(p['tokens']*price_usd):.2f} / {val_sol:.4f} SOL\n"
+            f"Entry: {p['sol_in']:.4f} SOL"
+        )
+        net_sol += val_sol
+    return lines, net_sol
