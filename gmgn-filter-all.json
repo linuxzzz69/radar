@@ -1,0 +1,69 @@
+[
+  {
+    "name": "linuxz69 - Safe Coins",
+    "chain": "solana",
+    "filters": {
+      "liquidity": {
+        "min": 100000
+      },
+      "volume24h": {
+        "min": 500000
+      },
+      "holders": {
+        "min": 3000
+      },
+      "top10Holders": {
+        "max": 25
+      },
+      "devHolding": {
+        "max": 0
+      },
+      "age": {
+        "min": 259200
+      },
+      "smartMoney": {
+        "min": 3
+      },
+      "freezeAuthority": false,
+      "mintAuthority": false,
+      "marketCap": {
+        "min": 1000000,
+        "max": 50000000
+      },
+      "snipers": {
+        "max": 15
+      }
+    }
+  },
+  {
+    "name": "linuxz69 - Momentum Plays",
+    "chain": "solana",
+    "filters": {
+      "timeframe": "1H",
+      "volume1h": {
+        "min": 200000
+      },
+      "priceChange1h": {
+        "min": 20,
+        "max": 200
+      },
+      "liquidity": {
+        "min": 50000
+      },
+      "top10Holders": {
+        "max": 30
+      },
+      "devHolding": {
+        "max": 0
+      },
+      "age": {
+        "max": 86400
+      },
+      "smartMoney": {
+        "min": 2
+      },
+      "freezeAuthority": false,
+      "mintAuthority": false
+    }
+  }
+]
