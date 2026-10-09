@@ -201,3 +201,55 @@ def positions_overview():
         )
         net_sol += val_sol
     return lines, net_sol
+
+
+# ---------------- live PnL + SL/TP engine ----------------
+
+SLTP_PATH = os.path.join(BASE, ".bot_sltp.json")
+CARD_PATH = os.path.join(BASE, ".bot_cards.json")  # mint -> (chat_id, message_id)
+
+def load_sltp():
+    try:
+        with open(SLTP_PATH) as f: return json.load(f)
+    except Exception:
+        return {}
+
+def save_sltp(d):
+    with open(SLTP_PATH, "w") as f: json.dump(d, f, indent=1)
+
+def set_rule(mint, kind, pct):
+    d = load_sltp()
+    d.setdefault(mint, {})[kind] = pct
+    save_sltp(d)
+
+def get_rules(mint):
+    return load_sltp().get(mint, {})
+
+def save_card(mint, chat_id, msg_id):
+    d = load(CARD_PATH, {}) if os.path.exists(CARD_PATH) else {}
+    with open(CARD_PATH, "w") as f:
+        d[mint] = {"chat": chat_id, "msg": msg_id}
+    # NOTE: load/CARD helpers local to avoid circular imports
+
+def load_card(mint):
+    if not os.path.exists(CARD_PATH): return None
+    with open(CARD_PATH) as f:
+        return json.load(f).get(mint)
+
+def position_pnl(mint):
+    """Return (symbol, value_sol, pnl_sol, pnl_pct, tokens) for an open position."""
+    d = load_positions()
+    p = d.get(mint)
+    if not p or p["tokens"] <= 0: return None
+    try:
+        dd = get_json(f"https://api.dexscreener.com/latest/dex/tokens/{mint}")
+        ps = dd.get("pairs") or []
+        best = max(ps, key=lambda x: (x.get("liquidity") or {}).get("usd", 0)) if ps else None
+        price_usd = float(best["priceUsd"]) if best and best.get("priceUsd") else 0
+        sym = (best["baseToken"]["symbol"] if best else p["symbol"]) or "?"
+    except Exception:
+        price_usd, sym = 0, p["symbol"]
+    val_sol = (p["tokens"] * price_usd) / 1e9
+    pnl_sol = val_sol - p["sol_in"]
+    pnl_pct = (pnl_sol / p["sol_in"] * 100) if p["sol_in"] else 0
+    return sym, val_sol, pnl_sol, pnl_pct, p["tokens"]
