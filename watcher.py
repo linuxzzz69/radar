@@ -214,6 +214,86 @@ def analyze_token(tg, chat, ca, top_n=8):
         tg_send(tg["token"], chat, f"🧵 trace failed: {e}")
     send_trade_panel(tg, chat, ca)
 
+
+def mirror_wallet(tg, chat, wallet):
+    """Show a watched wallet's recent token buys/sells from tx history."""
+    tg_send(tg["token"], chat, f"👁 mirroring <code>{wallet[:8]}..</code> last moves...")
+    import urllib.request
+    UA2 = {"User-Agent": "Mozilla/5.0", "Content-Type": "application/json"}
+    def rpc(m, p):
+        body = json.dumps({"jsonrpc": "2.0", "id": 1, "method": m, "params": p}).encode()
+        try:
+            r = json.load(urllib.request.urlopen(urllib.request.Request("https://api.mainnet-beta.solana.com", data=body, headers=UA2), timeout=25))
+            return r.get("result")
+        except Exception:
+            return None
+    sigs = rpc("getSignaturesForAddress", [wallet, {"limit": 12}]) or []
+    moves = []
+    for s in sigs[:12]:
+        if s.get("err"): continue
+        tx = rpc("getTransaction", [s["signature"], {"encoding": "jsonParsed", "maxSupportedTransactionVersion": 0}])
+        time.sleep(0.3)
+        if not tx: continue
+        meta = tx.get("meta") or {}
+        if meta.get("err"): continue
+        ts = time.strftime("%m-%d %H:%M", time.gmtime(s.get("blockTime") or 0))
+        ptb2 = meta.get("postTokenBalances") or []
+        ptb = meta.get("preTokenBalances") or []
+        pre = {}
+        for b in ptb:
+            o = b.get("owner")
+            if o: pre.setdefault(o, {})[b.get("mint","")] = int(b["uiTokenAmount"]["amount"])
+        post = {}
+        for b in ptb2:
+            o = b.get("owner")
+            if o: post.setdefault(o, {})[b.get("mint","")] = int(b["uiTokenAmount"]["amount"])
+        mints = set(list(pre.get(wallet, {}).keys()) + list(post.get(wallet, {}).keys()))
+        for m in mints:
+            d = post.get(wallet, {}).get(m, 0) - pre.get(wallet, {}).get(m, 0)
+            if abs(d) > 1000:
+                side = "BOUGHT" if d > 0 else "SOLD"
+                moves.append(f"{ts} | {side} {abs(d)/1e6:.1f}M of {m[:6]}..{m[-4:]}")
+    if moves:
+        tg_send(tg["token"], chat, "👁 <b>MIRROR — last moves</b>\n" + "\n".join(moves[:10]))
+    else:
+        tg_send(tg["token"], chat, "no token moves found in recent history")
+
+
+
+def fresh_launches(tg, chat):
+    """Last fresh Solana launches with quick safety verdicts."""
+    tg_send(tg["token"], chat, "🕸 scanning fresh launches...")
+    try:
+        dd = get_json("https://api.dexscreener.com/latest/dex/search?q=solana%20pump")
+        ps = dd.get("pairs") or []
+        fresh = []
+        now = time.time() * 1000
+        for p in ps:
+            if p.get("chainId") != "solana": continue
+            b = (p.get("baseToken") or {})
+            if b.get("symbol") in ("SOL","WSOL","USDC"): continue
+            liq = (p.get("liquidity") or {}).get("usd") or 0
+            v24 = (p.get("volume") or {}).get("h24") or 0
+            created = p.get("pairCreatedAt") or 0
+            age_h = (now - created) / 3600000
+            if liq < 15_000 or age_h > 24: continue
+            fresh.append((age_h, b.get("symbol"), b.get("address"),
+                          round((p.get("marketCap") or 0)/1e3),
+                          round(liq/1e3), round(v24/1e3),
+                          (p.get("priceChange") or {}).get("h24")))
+        fresh.sort()
+        if not fresh:
+            tg_send(tg["token"], chat, "no fresh launches above liquidity floor")
+            return
+        body = "\n".join(f"{s} | {age}h | mcap ${mc}K | liq ${lq}K | vol ${v}K | {chg}%"
+                          for _, s, _, mc, lq, v, chg in fresh[:8])
+        tg_send(tg["token"], chat,
+                f"🕸 <b>FRESH LAUNCHES (&lt;24h)</b>\n{body}\n\n"
+                f"Send any CA for the full scan + insider trace.")
+    except Exception as e:
+        tg_send(tg["token"], chat, f"fresh scan failed: {e}")
+
+
 def handle_command(tg, chat, text, state):
     text = text.strip()
     if text.startswith("/help") or text == "/start":
@@ -227,6 +307,11 @@ def handle_command(tg, chat, text, state):
                 "/status - radar health\n"
                 "/add <addr> <label> <funder|smart> [min_sol]\n"
                 "/remove <addr>\n"
+                "/new - fresh launches (<24h)\n"
+                "/mirror <wallet> - recent moves of a tracked wallet\n"
+                "/sl <CA> <pct> - stop-loss (auto-sell at -pct%)\n"
+                "/tp <CA> <pct> - take-profit (auto-sell at +pct%)\n"
+                "/positions - PnL overview\n"
                 "/help - this menu\n"
                 "⚠️ trading wallet = hot wallet. Fund only what you can lose.")
     elif text.startswith("/wallet"):
@@ -284,6 +369,32 @@ def handle_command(tg, chat, text, state):
                 f"buy preset: {t.get('preset_sol', 0.05)} SOL\n"
                 f"slippage: {t.get('slippage_bps', 1500)/100:.1f}%\n"
                 f"(edit watch_config.json 'trading' block + restart to change)")
+    elif text == "/new":
+        threading.Thread(target=fresh_launches, args=(tg, chat), daemon=True).start()
+    elif text.startswith("/mirror "):
+        try:
+            w = text.split()[1]
+            threading.Thread(target=mirror_wallet, args=(tg, chat, w), daemon=True).start()
+        except Exception as e:
+            tg_send(tg["token"], chat, f"usage: /mirror <wallet> ({e})")
+    elif text.startswith("/sl ") or text.startswith("/tp "):
+        kind = "sl" if text.startswith("/sl") else "tp"
+        try:
+            parts = text.split()
+            mint, pct = parts[1], float(parts[2])
+            from trading_bot import set_rule, load_positions
+            d = load_positions()
+            if mint not in d:
+                tg_send(tg["token"], chat, "no position in that token. /positions to see open ones")
+                return
+            set_rule(mint, kind, pct)
+            label = "STOP LOSS" if kind == "sl" else "TAKE PROFIT"
+            tg_send(tg["token"], chat,
+                    f"🎯 {label} set: {mint[:8]}.. at {pct:+.1f}%\n"
+                    f"The bot will auto-sell 100% when PnL crosses it.\n"
+                    f"(checked every 60s)")
+        except Exception as e:
+            tg_send(tg["token"], chat, f"usage: /sl <CA> -30  or  /tp <CA> 100 ({e})")
     elif text.startswith("/balance"):
         try:
             from trading_bot import load_wallet, sol_balance
@@ -463,6 +574,52 @@ def handle_callback(tg, chat, cb_id, data):
         tg_send(tg["token"], chat, f"trade error: {e}")
 
 
+
+def pnl_poll_loop(tg, chat):
+    """Every 60s: refresh PnL cards (editMessageText) + check SL/TP rules."""
+    while True:
+        time.sleep(60)
+        try:
+            from trading_bot import load_positions, position_pnl, load_card, get_rules, load_wallet, do_sell, sol_balance
+            d = load_positions()
+            for mint, p in list(d.items()):
+                if p["tokens"] <= 0: continue
+                r = position_pnl(mint)
+                if not r: continue
+                sym, val_sol, pnl_sol, pnl_pct, tokens = r
+                # SL/TP check
+                rules = get_rules(mint)
+                do_sell_now = False
+                reason = ""
+                if "sl" in rules and pnl_pct <= float(rules["sl"]):
+                    do_sell_now, reason = True, f"STOP LOSS {pnl_pct:.1f}% <= {rules['sl']}%"
+                if "tp" in rules and pnl_pct >= float(rules["tp"]):
+                    do_sell_now, reason = True, f"TAKE PROFIT {pnl_pct:.1f}% >= {rules['tp']}%"
+                if do_sell_now:
+                    kp, pub = load_wallet()
+                    from trading_bot import do_sell as _ds
+                    sig, err = _ds(mint, 100)
+                    if err:
+                        tg_send(tg["token"], chat, f"⚠️ {reason} — sell failed: {err}")
+                    else:
+                        from trading_bot import record_sell
+                        record_sell(mint, 100)
+                        tg_send(tg["token"], chat,
+                                f"🎯 <b>{reason} — AUTO-SOLD 100%</b>\n"
+                                f"tx: https://solscan.io/tx/{sig}")
+        except Exception as e:
+            print("pnl_poll error:", e)
+
+def best_price_usd(mint):
+    try:
+        from trading_bot import get_json
+        dd = get_json(f"https://api.dexscreener.com/latest/dex/tokens/{mint}")
+        ps = dd.get("pairs") or []
+        best = max(ps, key=lambda x: (x.get("liquidity") or {}).get("usd", 0)) if ps else None
+        return float(best["priceUsd"]) if best else 0
+    except Exception:
+        return 0
+
 def tg_listener(tg, chat):
     offset = load(STATE_PATH, {}).get("tg_offset", 0)
     while True:
@@ -578,6 +735,7 @@ def main():
     if not token or not chat:
         print("missing telegram token/chat in", CFG_PATH); sys.exit(1)
     threading.Thread(target=tg_listener, args=(tg, chat), daemon=True).start()
+    threading.Thread(target=pnl_poll_loop, args=(tg, chat), daemon=True).start()
     radar_loop(tg, chat)
 
 if __name__ == "__main__":
