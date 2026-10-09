@@ -208,6 +208,7 @@ def analyze_token(tg, chat, ca, top_n=8):
         tg_send(tg["token"], chat, f"🧵 <b>TRACE RESULT</b>\n{detail}\n{verdict}")
     except Exception as e:
         tg_send(tg["token"], chat, f"🧵 trace failed: {e}")
+    send_trade_panel(tg, chat, ca)
 
 def handle_command(tg, chat, text, state):
     text = text.strip()
@@ -316,65 +317,46 @@ def handle_command(tg, chat, text, state):
     elif BASE58.match(text):
         threading.Thread(target=analyze_token, args=(tg, chat, text), daemon=True).start()
         def send_trade_panel(ca):
-            time.sleep(2)
             try:
-                from trading_bot import wallet_exists, load_wallet, sol_balance, positions_overview, record_buy
+                from trading_bot import wallet_exists, load_wallet, sol_balance
                 import json as _json
                 cfg_t = (load(CFG_PATH, {}) or {}).get("trading", {})
-                if cfg_t.get("autobuy") and wallet_exists():
-                    _, pub = load_wallet()
-                    sol = sol_balance(pub)
-                    preset = float(cfg_t.get("preset_sol", 0.05))
-                    if sol >= preset + 0.02:
-                        tg_send(tg["token"], chat, f"⏳ auto-buying {preset} SOL of <code>{ca[:8]}..</code> ...")
-                        sig, err = None, None
-                        from trading_bot import do_buy
-                        sig, err = do_buy(ca, preset)
-                        if err:
-                            tg_send(tg["token"], chat, f"❌ auto-buy failed: {err}")
-                        else:
-                            dd = get_json(f"https://api.dexscreener.com/latest/dex/tokens/{ca}")
-                            best = max(dd.get("pairs") or [], key=lambda x:(x.get('liquidity') or {}).get('usd',0))
-                            sym = (best.get('baseToken') or {}).get('symbol','?')
-                            record_buy(ca, sym, preset, 0)
-                            tg_send(tg["token"], chat,
-                                    f"✅ <b>AUTO-BOUGHT</b> {preset} SOL of {sym}\n"
-                                    f"tx: https://solscan.io/tx/{sig}\n/positions for PnL")
-                        return
                 if not wallet_exists():
                     tg_buttons(tg["token"], chat,
-                            "⚡ <b>TRADE PANEL</b> — no wallet yet.\n"
-                            "Tap Setup to create one, then fund it with SOL.",
+                            "⚡ <b>TRADE PANEL</b> — no wallet yet.",
                             [[("🔧 Setup Wallet", "wallet:setup")]])
                     return
                 _, pub = load_wallet()
                 sol = sol_balance(pub)
-                wallet_line = f"bot wallet <code>{pub[:8]}..</code> ({sol:.3f} SOL)"
+                if cfg_t.get("autobuy") and sol >= float(cfg_t.get("preset_sol", 0.05)) + 0.02:
+                    preset = float(cfg_t.get("preset_sol", 0.05))
+                    tg_send(tg["token"], chat, f"⏳ auto-buying {preset} SOL of <code>{ca[:8]}..</code> ...")
+                    from trading_bot import do_buy, record_buy
+                    sig, err = do_buy(ca, preset)
+                    if err:
+                        tg_send(tg["token"], chat, f"❌ auto-buy failed: {err}")
+                    else:
+                        try:
+                            dd = get_json(f"https://api.dexscreener.com/latest/dex/tokens/{ca}")
+                            best = max(dd.get("pairs") or [], key=lambda x:(x.get('liquidity') or {}).get('usd',0))
+                            sym = (best.get('baseToken') or {}).get('symbol','?')
+                        except Exception:
+                            sym = '?'
+                        record_buy(ca, sym, preset, 0)
+                        tg_send(tg["token"], chat,
+                                f"✅ <b>AUTO-BOUGHT</b> {preset} SOL of {sym}\n"
+                                f"tx: https://solscan.io/tx/{sig}\n/positions for PnL")
+                    return
+                if sol < 0.06:
+                    tg_buttons(tg["token"], chat,
+                            f"⚡ <b>TRADE PANEL</b> — <code>{pub[:8]}..</code>\n💰 {sol:.3f} SOL — fund this address, then tap Buy.",
+                            [[("🟢 Buy 0.05", f"buy:0.05:{ca}"), ("🟢 Buy 0.1", f"buy:0.1:{ca}"), ("🟢 Buy 0.25", f"buy:0.25:{ca}")],
+                             [("🔧 /balance", "balance:check")]])
+                    return
                 tg_buttons(tg["token"], chat,
-                        f"⚡ <b>TRADE PANEL</b>\n{wallet_line}\n"
-                        f"Tap Buy/Sell — executes when the wallet is funded.",
-                        [[("🟢 Buy 0.05", f"buy:0.05:{ca}"), ("🟢 Buy 0.1", f"buy:0.1:{ca}"),
-                          ("🟢 Buy 0.25", f"buy:0.25:{ca}")],
-                         [("🔴 Sell 25%", f"sell:25:{ca}"), ("🔴 Sell 50%", f"sell:50:{ca}"),
-                          ("🔴 Sell 100%", f"sell:100:{ca}")]])
-            except Exception as e:
-                tg_send(tg["token"], chat, f"trade panel error: {e}")
-            time.sleep(2)
-            try:
-                from trading_bot import wallet_exists, load_wallet, sol_balance
-                if wallet_exists():
-                    _, pub = load_wallet()
-                    sol = sol_balance(pub)
-                    wallet_line = f"bot wallet <code>{pub[:8]}..</code> ({sol:.3f} SOL)"
-                else:
-                    wallet_line = "no wallet yet - /wallet to create one"
-                tg_buttons(tg["token"], chat,
-                        f"⚡ <b>TRADE PANEL</b>\n{wallet_line}\n"
-                        f"Tap Buy/Sell — executes when the wallet is funded.",
-                        [[("🟢 Buy 0.05", f"buy:0.05:{ca}"), ("🟢 Buy 0.1", f"buy:0.1:{ca}"),
-                          ("🟢 Buy 0.25", f"buy:0.25:{ca}")],
-                         [("🔴 Sell 25%", f"sell:25:{ca}"), ("🔴 Sell 50%", f"sell:50:{ca}"),
-                          ("🔴 Sell 100%", f"sell:100:{ca}")]])
+                        f"⚡ <b>TRADE PANEL</b> — <code>{pub[:8]}..</code> ({sol:.3f} SOL)\nTap a button — the bot signs and executes instantly.",
+                        [[("🟢 Buy 0.05", f"buy:0.05:{ca}"), ("🟢 Buy 0.1", f"buy:0.1:{ca}"), ("🟢 Buy 0.25", f"buy:0.25:{ca}")],
+                         [("🔴 Sell 25%", f"sell:25:{ca}"), ("🔴 Sell 50%", f"sell:50:{ca}"), ("🔴 Sell 100%", f"sell:100:{ca}")]])
             except Exception as e:
                 tg_send(tg["token"], chat, f"trade panel error: {e}")
         threading.Thread(target=send_trade_panel, args=(text,), daemon=True).start()
