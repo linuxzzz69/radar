@@ -1,11 +1,53 @@
-# GMGN.AI Filter Guide — For Your Radar Bot Workflow
-## The exact filter stack to find Heart Attack targets + safe plays
-
-**Use case:** You need a token with REAL volume (100K+/hour) on a
-FRESH DLMM pool with liquidity at the active bin — the exact
-conditions your Heart Attack module requires.
+# GMGN.AI Filter Guide — Find Good Coins
+## Simple filters for finding solid memecoins to trade/hold
 
 ---
+
+## STACK 1: SAFE COINS (for holding, swing trades)
+
+| Filter | Setting |
+|---|---|
+| Liquidity | ≥ $100K |
+| Volume 24h | ≥ $500K |
+| Holders | ≥ 3,000 |
+| Top 10 | ≤ 25% |
+| Dev holding | 0% |
+| Age | > 3 days |
+| Smart money | ≥ 3 holding |
+| Freeze/Mint | Revoked/No |
+| MCAP | $1M - $50M |
+
+**Then verify on your bot:** Send CA → trace result "no strong web" = safe.
+
+## STACK 2: MOMENTUM PLAYS (for quick flips)
+
+| Filter | Setting |
+|---|---|
+| Time | 1H |
+| Volume 1H | ≥ $200K |
+| 1H change | +20% to +200% |
+| Liquidity | ≥ $50K |
+| Top 10 | ≤ 30% |
+| Dev | 0% |
+| Age | < 24h |
+| Smart money | ≥ 2 buying |
+
+**Then verify on your bot:** /smart <CA> → if smart money exited = late, skip.
+
+## AVOID (red flags)
+
+- ❌ Top 10 > 40% (whale dump risk)
+- ❌ Dev holding > 0%
+- ❌ Volume < $50K/hour
+- ❌ Snipers > 20%
+- ❌ Bundled (GMGN badge)
+- ❌ MCAP < $100K
+- ❌ Holder count dropping
+- ❌ 1H volume > 24H volume (one-candle pump)
+
+---
+
+## HEART ATTACK SPECIFIC (when market conditions are right)
 
 ## THE HEART ATTACK FILTER STACK (your primary need)
 
