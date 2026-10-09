@@ -320,6 +320,101 @@ def fresh_launches(tg, chat):
         tg_send(tg["token"], chat, f"fresh scan failed: {e}")
 
 
+
+
+def pnl_audit(tg, chat, ca):
+    """Position audit: price vs the smart money's cost basis."""
+    tg_send(tg["token"], chat, "📊 auditing position...")
+    try:
+        import smart_hunter
+        winners, pool = smart_hunter.hunt(ca, sample=30)
+        dd = get_json(f"https://api.dexscreener.com/latest/dex/tokens/{ca}")
+        ps = dd.get("pairs") or []
+        best = max(ps, key=lambda x:(x.get('liquidity') or {}).get('usd',0)) if ps else None
+        px = best.get('priceUsd') if best else '?'
+        sym = (best.get('baseToken') or {}).get('symbol','?') if best else '?'
+        if not winners:
+            tg_send(tg["token"], chat,
+                    f"📊 <b>{sym} AUDIT</b>\nprice ${px}\n"
+                    f"no realized-PnL wallets found in the window - either very early,\n"
+                    f"or volume is too thin to judge. Careful.")
+            return
+        # are the realized winners still holding? that's the answer
+        from insider_radar import rpc as _rpc
+        holding = 0
+        for w in winners[:5]:
+            res = _rpc("getTokenAccountsByOwner",[w["wallet"],{"mint":ca},{"encoding":"jsonParsed"}])
+            time.sleep(0.3)
+            still = False
+            if res:
+                for a in res.get("result",{}).get("value",[]):
+                    info=a["account"]["data"]["parsed"]["info"]
+                    if int(info["tokenAmount"]["amount"])>0: still=True; break
+            holding += 1 if still else 0
+        tg_send(tg["token"], chat,
+                f"📊 <b>{sym} AUDIT</b>\nprice ${px}\n"
+                f"realized-PnL wallets: {len(winners)}\n"
+                f"still holding after profit: {holding}/{min(len(winners),5)}\n"
+                f"{'🟢 smart money is IN - the run may have legs' if holding>=3 else '🟡 mixed' if holding>=1 else '🔴 smart money already exited - be careful'}")
+    except Exception as e:
+        tg_send(tg["token"], chat, f"audit failed: {e}")
+
+
+def smart_feed(tg, chat, ca):
+    """Find wallets with realized profit on a token - then offer /add."""
+    tg_send(tg["token"], chat, "🧠 hunting profitable wallets...")
+    try:
+        import smart_hunter
+        winners, pool = smart_hunter.hunt(ca)
+        if not winners:
+            tg_send(tg["token"], chat,
+                    "🧠 <b>SMART HUNT</b>\nno wallets with realized profit found in the sampled window\n"
+                    "(try later: RPC rate limits or too few trades)")
+            return
+        body = "\n".join(
+            f"🧠 <code>{w['wallet']}</code>\n"
+            f"net <b>+{w['net_sol']} SOL</b> | {w['buys']}B/{w['sells']}S"
+            for w in winners[:5])
+        # /add buttons for the top 3
+        from trading_bot import wallet_exists
+        rows = [[("➕ Add", f"addsmart:{w['wallet']}")] for w in winners[:3]]
+        tg_buttons(tg["token"], chat,
+                f"🧠 <b>SMART HUNT — realized PnL wallets</b>\n{body}\n\nTap to add to your watch list:",
+                rows)
+    except Exception as e:
+        tg_send(tg["token"], chat, f"smart hunt failed: {e}")
+
+def pairs_compare(tg, chat, ca):
+    """All pools for a token, side by side, best LP pool marked."""
+    tg_send(tg["token"], chat, "🔍 comparing pools...")
+    try:
+        dd = get_json(f"https://api.dexscreener.com/latest/dex/tokens/{ca}")
+        ps = dd.get("pairs") or []
+        rows = []
+        for p in sorted(ps, key=lambda x: -((x.get('liquidity') or {}).get('usd') or 0))[:6]:
+            liq = (p.get('liquidity') or {}).get('usd') or 0
+            vol = (p.get('volume') or {}).get('h24') or 0
+            to = round(vol/liq,1) if liq else 0
+            b=(p.get('baseToken') or {}); q=(p.get('quoteToken') or {})
+            rows.append((to, f"{b.get('symbol')}/{q.get('symbol')} {p.get('dexId')} | "
+                          f"liq ${round(liq/1e3)}K | vol24 ${round(vol/1e6,2)}M | TO {to}x | "
+                          f"<code>{p.get('pairAddress','')[:10]}..</code>"))
+        rows.sort(reverse=True)
+        body = "\n".join(("⭐ " if i==0 else "   ")+r[1] for i,r in enumerate(rows))
+        tg_send(tg["token"], chat, f"🔍 <b>POOLS for this token (best turnover first)</b>\n{body}\n\n⭐ = recommended LP venue")
+    except Exception as e:
+        tg_send(tg["token"], chat, f"pairs failed: {e}")
+
+def watchlist_show(tg, chat):
+    cfg2 = load(CFG_PATH, {}) or {}
+    wl = cfg2.get("watch", [])
+    if not wl:
+        tg_send(tg["token"], chat, "watch list empty. /add <addr> <label> <funder|smart>")
+        return
+    body = "\n".join(f"• {w['label']} <code>{w['address'][:8]}..{w['address'][-4:]}</code> ({w['type']}, ≥{w.get('min_sol_out',0.5)} SOL)"
+                      for w in wl)
+    tg_send(tg["token"], chat, f"👁 <b>WATCH LIST ({len(wl)})</b>\n{body}")
+
 def handle_command(tg, chat, text, state):
     text = text.strip()
     if text.startswith("/help") or text == "/start":
@@ -338,6 +433,10 @@ def handle_command(tg, chat, text, state):
                 "/sl <CA> <pct> - stop-loss (auto-sell at -pct%)\n"
                 "/tp <CA> <pct> - take-profit (auto-sell at +pct%)\n"
                 "/positions - PnL overview\n"
+                "/smart <CA> - find realized-PnL wallets\n"
+                "/pnl <CA> - position audit (smart money status)\n"
+                "/pairs <CA> - compare LP pools\n"
+                "/watchlist - tracked wallets\n"
                 "/help - this menu\n"
                 "⚠️ trading wallet = hot wallet. Fund only what you can lose.")
     elif text.startswith("/wallet"):
@@ -395,6 +494,26 @@ def handle_command(tg, chat, text, state):
                 f"buy preset: {t.get('preset_sol', 0.05)} SOL\n"
                 f"slippage: {t.get('slippage_bps', 1500)/100:.1f}%\n"
                 f"(edit watch_config.json 'trading' block + restart to change)")
+    elif text.startswith("/pnl "):
+        try:
+            ca2 = text.split()[1]
+            threading.Thread(target=pnl_audit, args=(tg, chat, ca2), daemon=True).start()
+        except Exception as e:
+            tg_send(tg["token"], chat, f"usage: /pnl <CA> ({e})")
+    elif text.startswith("/smart "):
+        try:
+            ca2 = text.split()[1]
+            threading.Thread(target=smart_feed, args=(tg, chat, ca2), daemon=True).start()
+        except Exception as e:
+            tg_send(tg["token"], chat, f"usage: /smart <CA> ({e})")
+    elif text.startswith("/pairs "):
+        try:
+            ca2 = text.split()[1]
+            threading.Thread(target=pairs_compare, args=(tg, chat, ca2), daemon=True).start()
+        except Exception as e:
+            tg_send(tg["token"], chat, f"usage: /pairs <CA> ({e})")
+    elif text == "/watchlist":
+        watchlist_show(tg, chat)
     elif text == "/new":
         threading.Thread(target=fresh_launches, args=(tg, chat), daemon=True).start()
     elif text.startswith("/mirror "):
@@ -551,6 +670,14 @@ def handle_callback(tg, chat, cb_id, data):
             return
         if action == "balance":
             handle_command(tg, chat, "/balance", None)
+            return
+        if action == "addsmart":
+            wallet_addr = val
+            cfg2 = load(CFG_PATH, {})
+            cfg2["watch"] = [x for x in cfg2.get("watch", []) if x["address"] != wallet_addr]
+            cfg2["watch"].append({"address": wallet_addr, "label": "SMART", "type": "smart", "min_sol_out": 0.5})
+            save(CFG_PATH, cfg2)
+            tg_send(tg["token"], chat, f"✅ SMART wallet added to watch list")
             return
         if action == "jupbuy":
             handle_callback(tg, chat, cb_id, f"buy:{val}:{ca}")
