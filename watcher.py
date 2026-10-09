@@ -776,6 +776,12 @@ def tg_answer_callback(token, cb_id, text=None):
     except Exception:
         pass
 
+
+def save_offset(new_offset):
+    st = load(STATE_PATH, {})
+    st["tg_offset"] = new_offset
+    save(STATE_PATH, st)
+
 def handle_callback(tg, chat, cb_id, data):
     """data format: buy:<amount>:<ca>  or  sell:<pct>:<ca>"""
     st = load(STATE_PATH, {})
@@ -942,9 +948,8 @@ def tg_listener(tg, chat):
                     cbid = cb.get("id")
                     if str(cid) == str(chat) and cdata:
                         threading.Thread(target=handle_callback, args=(tg, chat, cbid, cdata), daemon=True).start()
-                    st2 = load(STATE_PATH, {})
-                    st2["tg_offset"] = u["update_id"] + 1
-                    save(STATE_PATH, st2)
+                    # offset update AFTER dispatch, merged via locked save (no full overwrite)
+                    save_offset(u["update_id"] + 1)
                     offset = u["update_id"] + 1
                     continue
                 m = u.get("message") or {}
