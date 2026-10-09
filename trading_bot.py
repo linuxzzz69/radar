@@ -226,15 +226,19 @@ def get_rules(mint):
     return load_sltp().get(mint, {})
 
 def save_card(mint, chat_id, msg_id):
-    d = load(CARD_PATH, {}) if os.path.exists(CARD_PATH) else {}
+    d = load_card_all()
+    d[mint] = {"chat": chat_id, "msg": msg_id}
     with open(CARD_PATH, "w") as f:
-        d[mint] = {"chat": chat_id, "msg": msg_id}
-    # NOTE: load/CARD helpers local to avoid circular imports
+        json.dump(d, f, indent=1)
+
+def load_card_all():
+    try:
+        with open(CARD_PATH) as f: return json.load(f)
+    except Exception:
+        return {}
 
 def load_card(mint):
-    if not os.path.exists(CARD_PATH): return None
-    with open(CARD_PATH) as f:
-        return json.load(f).get(mint)
+    return load_card_all().get(mint)
 
 def position_pnl(mint):
     """Return (symbol, value_sol, pnl_sol, pnl_pct, tokens) for an open position."""

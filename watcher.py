@@ -360,6 +360,76 @@ def pnl_audit(tg, chat, ca):
         tg_send(tg["token"], chat, f"audit failed: {e}")
 
 
+
+def portfolio_card(tg, chat):
+    """One card: positions + watch list + uptime."""
+    try:
+        cfg2 = load(CFG_PATH, {}) or {}
+        from trading_bot import load_positions, position_pnl, load_wallet, sol_balance
+        _, pub = load_wallet()
+        sol = sol_balance(pub)
+        d = load_positions()
+        lines=[]
+        net = sol
+        for mint,p in d.items():
+            if p["tokens"]<=0: continue
+            r=position_pnl(mint)
+            if not r: continue
+            sym,val,pnl_sol,pnl_pct,_=r
+            net+=val
+            lines.append(f"{'🟢' if pnl_pct>=0 else '🔴'} {sym}: {pnl_pct:+.1f}% ({pnl_sol:+.4f} SOL)")
+        wl=cfg2.get("watch",[])
+        up=(time.time()-START_TS)/3600
+        body="\n".join(lines) if lines else "(no open positions)"
+        tg_send(tg["token"], chat,
+                f"📒 <b>PORTFOLIO</b>\n"
+                f"💰 wallet: {sol:.3f} SOL\n"
+                f"📈 positions:\n{body}\n"
+                f"➖ net worth: {net:.3f} SOL\n"
+                f"👁 watching {len(wl)} wallets\n"
+                f"⏱ uptime {up:.1f}h")
+    except Exception as e:
+        tg_send(tg["token"], chat, f"portfolio error: {e}")
+
+
+
+def exit_calc(tg, chat, ca, pct):
+    """Show what selling X% gets right now, before executing."""
+    try:
+        from trading_bot import token_balance
+        bal = token_balance(pub0(), ca) if False else None
+        # use bot wallet
+        from trading_bot import load_wallet
+        _, pub = load_wallet()
+        bal = token_balance(pub, ca)
+        if bal <= 0:
+            tg_send(tg["token"], chat, "no holding of that token")
+            return
+        dd = get_json(f"https://api.dexscreener.com/latest/dex/tokens/{ca}")
+        ps = dd.get("pairs") or []
+        best = max(ps, key=lambda x:(x.get('liquidity') or {}).get('usd',0)) if ps else None
+        px = float(best.get('priceUsd') or 0) if best else 0
+        sym = (best.get('baseToken') or {}).get('symbol','?') if best else '?'
+        raw = int(bal * pct / 100)
+        q = None
+        try:
+            q = json.load(urllib.request.urlopen(urllib.request.Request(
+                f"https://lite-api.jup.ag/swap/v1/quote?inputMint={ca}&outputMint=So11111111111111111111111111111111111111112&amount={raw}&slippageBps=1500",
+                headers={"User-Agent":"Mozilla/5.0"}), timeout=20))
+        except Exception:
+            pass
+        got = int(q.get("outAmount", 0))/1e9 if q and q.get("outAmount") else None
+        usd = got * 115 if got else raw/1e6 * px * 1e6 / 1e6 * 1e0
+        usd = got * 115.0 if got else None
+        line = f"you'd get ~{got:.4f} SOL (~${usd:.2f})" if got else "no route right now"
+        tg_send(tg["token"], chat,
+                f"🚪 <b>EXIT CALC</b> — sell {pct}% of {sym}\n"
+                f"holding {bal/1e6:.1f}M\n{line}\n"
+                f"(tap Sell {pct}% in the panel to execute)")
+    except Exception as e:
+        tg_send(tg["token"], chat, f"exit calc error: {e}")
+
+
 def smart_feed(tg, chat, ca):
     """Find wallets with realized profit on a token - then offer /add."""
     tg_send(tg["token"], chat, "🧠 hunting profitable wallets...")
@@ -435,6 +505,11 @@ def handle_command(tg, chat, text, state):
                 "/positions - PnL overview\n"
                 "/smart <CA> - find realized-PnL wallets\n"
                 "/pnl <CA> - position audit (smart money status)\n"
+                "/exit <CA> <pct> - what selling X% gets right now\n"
+                "/trail <CA> <pct> - trailing stop from peak\n"
+                "/portfolio - full book card\n"
+                "/mute /unmute <wallet> - alert toggles\n"
+                "(paste a jup/gmgn/dexscreener link - CA auto-extracted)\n"
                 "/pairs <CA> - compare LP pools\n"
                 "/watchlist - tracked wallets\n"
                 "/help - this menu\n"
@@ -471,6 +546,15 @@ def handle_command(tg, chat, text, state):
                     f"manager or write it on paper. Never share. Never screenshot.")
         except Exception as e:
             tg_send(tg["token"], chat, "no wallet yet. /wallet first")
+    elif text.startswith("/exit "):
+        try:
+            p=text.split()
+            ca2, pct = p[1], int(p[2]) if len(p)>2 else 100
+            threading.Thread(target=exit_calc, args=(tg, chat, ca2, pct), daemon=True).start()
+        except Exception as e:
+            tg_send(tg["token"], chat, f"usage: /exit <CA> <pct> ({e})")
+    elif text == "/portfolio":
+        portfolio_card(tg, chat)
     elif text.startswith("/positions"):
         try:
             from trading_bot import positions_overview, load_wallet
@@ -516,12 +600,38 @@ def handle_command(tg, chat, text, state):
         watchlist_show(tg, chat)
     elif text == "/new":
         threading.Thread(target=fresh_launches, args=(tg, chat), daemon=True).start()
+    elif text.startswith("/mute ") or text.startswith("/unmute "):
+        w = text.split()[1]
+        cfg2 = load(CFG_PATH, {}) or {}
+        for x in cfg2.get("watch", []):
+            if x["address"] == w:
+                x["muted"] = text.startswith("/mute")
+                save(CFG_PATH, cfg2)
+                state_txt = "MUTED" if x["muted"] else "UNMUTED"
+                tg_send(tg["token"], chat, f"👁 {x['label']} {state_txt}")
+                return
+        tg_send(tg["token"], chat, "wallet not in watch list")
     elif text.startswith("/mirror "):
         try:
             w = text.split()[1]
             threading.Thread(target=mirror_wallet, args=(tg, chat, w), daemon=True).start()
         except Exception as e:
             tg_send(tg["token"], chat, f"usage: /mirror <wallet> ({e})")
+    elif text.startswith("/trail "):
+        try:
+            parts = text.split()
+            mint, pct = parts[1], float(parts[2])
+            from trading_bot import set_rule, load_positions
+            d = load_positions()
+            if mint not in d:
+                tg_send(tg["token"], chat, "no position in that token")
+                return
+            set_rule(mint, "trail", pct)
+            tg_send(tg["token"], chat,
+                    f"🎯 Trailing stop set: {mint[:8]}.. trails {pct:.1f}% from peak.\n"
+                    f"Bot sells 100% when PnL falls {pct:.1f}% below its highest point.")
+        except Exception as e:
+            tg_send(tg["token"], chat, f"usage: /trail <CA> 20 ({e})")
     elif text.startswith("/sl ") or text.startswith("/tp "):
         kind = "sl" if text.startswith("/sl") else "tp"
         try:
@@ -574,6 +684,21 @@ def handle_command(tg, chat, text, state):
         cfg["watch"] = [x for x in cfg.get("watch", []) if x["address"] != addr]
         save(CFG_PATH, cfg)
         tg_send(tg["token"], chat, f"🗑 removed <code>{addr[:8]}..</code>")
+    elif ("jup.ag" in text or "dexscreener.com" in text or "gmgn.ai" in text
+          or "pump.fun" in text or "meteora.ag" in text):
+        # extract mint from URL-style paste
+        import re as _re
+        m2 = _re.search(r"(?:tokens|token|swap[/SOL-]*|dlmm[/]|pairs[/solana/])/?([1-9A-HJ-NP-Za-km-z]{32,44})", text)
+        if not m2:
+            m2 = _re.search(r"([1-9A-HJ-NP-Za-km-z]{40,44}pump)", text)
+        if not m2:
+            m2 = _re.search(r"([1-9A-HJ-NP-Za-km-z]{43,44})", text)
+        if m2:
+            ca2 = m2.group(1)
+            tg_send(tg["token"], chat, f"🔎 extracted CA: <code>{ca2}</code>")
+            handle_command(tg, chat, ca2, state)
+        else:
+            tg_send(tg["token"], chat, "couldn't find a token address in that link. Send the raw CA.")
     elif BASE58.match(text):
         cfg_w = load(CFG_PATH, {}) or {}
         watched = {w["address"] for w in cfg_w.get("watch", [])}
@@ -728,8 +853,17 @@ def handle_callback(tg, chat, cb_id, data):
 
 
 
+def tg_edit(token, chat, msg_id, text):
+    data = urllib.parse.urlencode({"chat_id": chat, "message_id": msg_id,
+                                   "text": text, "parse_mode": "HTML"}).encode()
+    try:
+        urllib.request.urlopen(urllib.request.Request(
+            f"https://api.telegram.org/bot{token}/editMessageText", data=data), timeout=15)
+    except Exception:
+        pass  # message unchanged or too old - fine
+
 def pnl_poll_loop(tg, chat):
-    """Every 60s: refresh PnL cards (editMessageText) + check SL/TP rules."""
+    """Every 60s: edit PnL cards in place + check SL/TP rules."""
     while True:
         time.sleep(60)
         try:
@@ -740,6 +874,12 @@ def pnl_poll_loop(tg, chat):
                 r = position_pnl(mint)
                 if not r: continue
                 sym, val_sol, pnl_sol, pnl_pct, tokens = r
+                usd = tokens * (best_price_usd(mint) or 0)
+                card = load_card(mint)
+                if card:
+                    tg_edit(tg["token"], card["chat"], card["msg"],
+                            f"📊 <b>{sym}</b> LIVE — PnL {pnl_pct:+.1f}% ({pnl_sol:+.4f} SOL)\n"
+                            f"Value: ${usd:.2f}\nSell via buttons below ⬇")
                 # SL/TP check
                 rules = get_rules(mint)
                 do_sell_now = False
@@ -748,6 +888,20 @@ def pnl_poll_loop(tg, chat):
                     do_sell_now, reason = True, f"STOP LOSS {pnl_pct:.1f}% <= {rules['sl']}%"
                 if "tp" in rules and pnl_pct >= float(rules["tp"]):
                     do_sell_now, reason = True, f"TAKE PROFIT {pnl_pct:.1f}% >= {rules['tp']}%"
+                # trailing stop: once in profit, trail the peak. Track peak in state.
+                if "trail" in rules and pnl_pct > 0:
+                    st_pnl = load(STATE_PATH, {})
+                    peak = st_pnl.get("trails", {}).get(mint, {"peak": 0})
+                    pk = max(peak.get("peak", 0), pnl_pct)
+                    if pnl_pct <= pk - float(rules["trail"]):
+                        do_sell_now, reason = True, f"TRAILING STOP: peaked {pk:.1f}%, fell to {pnl_pct:.1f}% (trail {rules['trail']}%)"
+                        st_pnl.setdefault("trails", {}).pop(mint, None)
+                        save(STATE_PATH, st_pnl)
+                    else:
+                        tr = st_pnl.setdefault("trails", {})
+                        if tr.get(mint, {}).get("peak", 0) < pk:
+                            tr[mint] = {"peak": pk}
+                            save(STATE_PATH, st_pnl)
                 if do_sell_now:
                     kp, pub = load_wallet()
                     from trading_bot import do_sell as _ds
@@ -827,6 +981,7 @@ def radar_loop(tg, chat):
     while True:
         cfg = load(CFG_PATH, cfg)   # live-reload config (picks up /add //remove)
         for w in cfg.get("watch", []):
+            if w.get("muted"): continue
             addr, typ = w["address"], w["type"]
             res = rpc("getSignaturesForAddress", [addr, {"limit": 30}])
             if not res: continue
