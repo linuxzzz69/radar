@@ -508,11 +508,10 @@ def radar_loop(tg, chat):
     known_children = state.get("known_children", {})
     last_heartbeat = time.time()
 
-    tg_send(tg["token"], chat,
-            "🟢 <b>linuxz69 radar online</b>\n"
-            + "\n".join(f"• {w['label']} <code>{w['address'][:6]}..{w['address'][-4:]}</code> ({w['type']})"
-                        for w in cfg["watch"]))
     print(f"radar watching {len(cfg['watch'])}, poll {POLL_SECONDS}s. Ctrl+C to stop.")
+    # NOTE: no startup broadcast message - duplicates on every restart annoyed the user.
+    # Status visible via /status in Telegram.
+
 
     while True:
         cfg = load(CFG_PATH, cfg)   # live-reload config (picks up /add //remove)
