@@ -1,0 +1,34 @@
+version: "3.8"
+
+services:
+  # Telegram radar + trading bot (watcher.py)
+  radar-watcher:
+    build: .
+    container_name: radar-watcher
+    restart: always
+    env_file:
+      - .env            # RPC_URL etc (optional)
+    volumes:
+      - ./watch_config.json:/app/watch_config.json:ro      # secrets/state stay OUTSIDE the image
+      - ./watcher_state.json:/app/watcher_state.json
+      - ./.bot_wallet.json:/app/.bot_wallet.json:ro        # hot wallet key (mounted, never baked)
+      - ./watcher.log:/app/watcher.log
+    healthcheck:
+      test: ["CMD-SHELL", "python3 -c \"import urllib.request;urllib.request.urlopen('https://api.telegram.org',timeout=10)\""]
+      interval: 120s
+      timeout: 15s
+      retries: 3
+
+  # DBC on-chain state microservice (official Meteora SDK)
+  dbc-state:
+    image: node:20-slim
+    container_name: dbc-state
+    restart: always
+    working_dir: /app
+    environment:
+      - RPC_URL=https://api.mainnet-beta.solana.com
+    volumes:
+      - ./radar-dbc:/app
+    command: sh -c "npm install --omit=dev --no-audit --no-fund && node dbc_state.js"
+    expose:
+      - "8077"
