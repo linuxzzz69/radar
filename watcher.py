@@ -959,7 +959,15 @@ def tg_listener(tg, chat):
         try:
             url = f"https://api.telegram.org/bot{tg['token']}/getUpdates?offset={offset}&timeout=0"
             ups = json.load(urllib.request.urlopen(urllib.request.Request(url), timeout=15)).get("result", [])
+            processed = load(STATE_PATH, {}).get("processed_updates", [])
             for u in ups:
+                if u["update_id"] in processed:
+                    continue  # already handled (re-delivered update - skip)
+                processed.append(u["update_id"])
+                if len(processed) > 200: processed = processed[-100:]
+                st2 = load(STATE_PATH, {})
+                st2["processed_updates"] = processed
+                save(STATE_PATH, st2)
                 offset = u["update_id"] + 1
                 if "callback_query" in u:
                     cb = u["callback_query"]
