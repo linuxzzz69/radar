@@ -21,9 +21,7 @@ RUN cd /app/radar-dbc && npm install --omit=dev --no-audit --no-fund
 COPY watcher.py trading_bot.py monitor_cards.py insider_radar.py /app/
 COPY radar-dbc/dbc_state.js /app/radar-dbc/dbc_state.js
 
-# Non-root user
-RUN useradd -m bot && chown -R bot:bot /app
-USER bot
-
+# NOTE: runs as root because state files are host-mounted (root-owned).
+# Acceptable for a single-tenant VPS container with no exposed ports.
 WORKDIR /app
 CMD ["python3", "-u", "watcher.py"]
