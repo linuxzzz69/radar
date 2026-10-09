@@ -48,3 +48,7 @@ services:
     command: sh -c "npm install --omit=dev --no-audit --no-fund && node dbc_state.js"
     expose:
       - "8077"
+
+networks:
+  default:
+    name: radar

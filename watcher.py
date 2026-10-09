@@ -982,7 +982,9 @@ def best_price_usd(mint):
         return 0
 
 
-HA_SERVICE = "http://127.0.0.1:8078"  # dlmm_service (runs beside dbc-state on the VPS)
+# Docker network service name (inter-container communication)
+# falls back to localhost for local testing
+HA_SERVICE = os.environ.get("HA_SERVICE", "http://ha-service:8078")
 
 def ha_get(path):
     req = urllib.request.Request(f"{HA_SERVICE}{path}", headers={"User-Agent": "Mozilla/5.0"})
