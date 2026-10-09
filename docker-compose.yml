@@ -26,7 +26,7 @@ services:
     restart: always
     working_dir: /app
     environment:
-      - RPC_URL=https://api.mainnet-beta.solana.com
+      - RPC_URL=https://solana-rpc.publicnode.com
       - PORT=8078
     volumes:
       - ./radar-ha:/app
