@@ -5,8 +5,7 @@ on:
     branches: [master]
     paths-ignore:
       - "**.md"
-      - "reply-style.md"
-
+      - "VPS-SETUP.md"
   workflow_dispatch:
 
 jobs:
@@ -20,15 +19,30 @@ jobs:
           username: ${{ secrets.VPS_USER }}
           key: ${{ secrets.VPS_SSH_KEY }}
           script_stop: true
+          command_timeout: 10m
           script: |
+            set -e
             cd /opt/radar
-            git pull origin master
-            docker compose up -d --build
-            sleep 3
-            if docker compose ps --status running | grep -q radar-watcher; then
-              echo "DEPLOY OK: radar-watcher running"
-            else
+            git pull --rebase origin master
+
+            # rebuild image (no-cache for the code layer to avoid stale COPY cache)
+            docker compose build radar-watcher
+
+            # recreate containers
+            docker compose up -d --force-recreate
+
+            sleep 5
+
+            # health check: watcher alive + log line clean
+            if ! docker compose ps --status running | grep -q radar-watcher; then
               echo "DEPLOY FAILED: radar-watcher not running"
-              docker compose logs --tail 20 radar-watcher
+              docker compose logs --tail 30 radar-watcher
               exit 1
             fi
+            if docker compose logs --tail 30 radar-watcher 2>/dev/null | grep -q "Traceback (most recent call last)"; then
+              echo "DEPLOY FAILED: traceback in watcher logs"
+              docker compose logs --tail 30 radar-watcher
+              exit 1
+            fi
+
+            echo "DEPLOY OK: $(git log --oneline -1) | containers running"
