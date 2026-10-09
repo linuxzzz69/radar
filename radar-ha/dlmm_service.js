@@ -41,8 +41,13 @@ app.get("/pool-info", async (req, res) => {
   try {
     const dlmm = await getDlmm(req.query.pair);
     const activeBin = dlmm.getActiveBin();
+    if (!activeBin || !activeBin.price) {
+      return res.status(500).json({
+        error: "pool has no liquidity at the active bin. The pool may be dead, drained, or a different token than expected. Verify the pair on meteora.ag."
+      });
+    }
     res.json({
-      activeBinPrice: activeBin.price, // human price
+      activeBinPrice: activeBin.price,
       binStep: dlmm.lbPair.binStep,
       activeBinId: activeBin.binId,
       price: activeBin.price.toString(),
