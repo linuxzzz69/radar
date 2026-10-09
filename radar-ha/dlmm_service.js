@@ -40,6 +40,7 @@ app.get("/health", (_req, res) => res.json({
 app.get("/pool-info", async (req, res) => {
   try {
     const dlmm = await getDlmm(req.query.pair);
+    await dlmm.refetchStates();  // populate internal state (WITHOUT this, getActiveBin returns {})
     const activeBin = dlmm.getActiveBin();
     if (!activeBin || !activeBin.price) {
       return res.status(500).json({
@@ -60,7 +61,7 @@ app.post("/open", async (req, res) => {
   const { pair, solAmount, bins } = req.body;
   try {
     const dlmm = await getDlmm(pair);
-    const activeBin = dlmm.getActiveBin();
+    await dlmm.refetchStates();
     const binStep = dlmm.lbPair.binStep;
     // curve: 3-5 bins centered on active bin (spread both sides)
     const total = bins || 5;
@@ -94,6 +95,7 @@ app.post("/close", async (req, res) => {
   const { pair, positionMint } = req.body;
   try {
     const dlmm = await getDlmm(pair);
+    await dlmm.refetchStates();
     const position = new PublicKey(positionMint);
     const positionData = await dlmm.getUserPositions(BOT_KEYPAIR.publicKey);
     const pos = positionData.find(p =>
@@ -113,6 +115,7 @@ app.get("/position", async (req, res) => {
   const { pair, positionMint } = req.query;
   try {
     const dlmm = await getDlmm(pair);
+    await dlmm.refetchStates();
     const positions = await dlmm.getUserPositions(BOT_KEYPAIR.publicKey);
     const pos = positions.find(p => p.publicKey.toString() === positionMint);
     if (!pos) return res.json({ found: false });
