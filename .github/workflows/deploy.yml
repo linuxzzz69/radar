@@ -22,10 +22,6 @@ jobs:
           command_timeout: 10m
           script: |
             set -e
-            # kill the systemd twin (old radar.service) - only Docker runs the bot
-            systemctl disable --now radar 2>/dev/null || true
-            pkill -9 -f "watcher.py" 2>/dev/null || true
-            sleep 1
             cd /opt/radar
             git pull --rebase origin master
 
