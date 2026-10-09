@@ -18,7 +18,23 @@ services:
       timeout: 15s
       retries: 3
 
-  # DBC on-chain state microservice (official Meteora SDK)
+
+  # Heart Attack module (DLMM position open/close/claim)
+  ha-service:
+    image: node:20-slim
+    container_name: ha-service
+    restart: always
+    working_dir: /app
+    environment:
+      - RPC_URL=https://api.mainnet-beta.solana.com
+      - PORT=8078
+    volumes:
+      - ./radar-ha:/app
+      - ./.bot_wallet.json:/app/.bot_wallet.json:ro
+    command: sh -c "npm install --omit=dev --no-audit --no-fund && node dlmm_service.js"
+    expose:
+      - "8078"
+\n  # DBC on-chain state microservice (official Meteora SDK)
   dbc-state:
     image: node:20-slim
     container_name: dbc-state
