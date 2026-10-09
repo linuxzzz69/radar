@@ -508,6 +508,7 @@ def handle_command(tg, chat, text, state):
                 "/exit <CA> <pct> - what selling X% gets right now\n"
                 "/trail <CA> <pct> - trailing stop from peak\n"
                 "/close <CA> - sell 100% + clear rules\n"
+                "/heart-attack <DLMM pair> - open Heart Attack position\n"
                 "/portfolio - full book card\n"
                 "/mute /unmute <wallet> - alert toggles\n"
                 "(paste a jup/gmgn/dexscreener link - CA auto-extracted)\n"
@@ -612,6 +613,13 @@ def handle_command(tg, chat, text, state):
                 tg_send(tg["token"], chat, f"👁 {x['label']} {state_txt}")
                 return
         tg_send(tg["token"], chat, "wallet not in watch list")
+    elif text.startswith("/heart-attack"):
+        # usage: /heart-attack <DLMM_PAIR_ADDRESS> (from meteora.ag/dlmm/...)
+        try:
+            pair = text.split()[1]
+            threading.Thread(target=ha_panel, args=(tg, chat, pair), daemon=True).start()
+        except Exception as e:
+            tg_send(tg["token"], chat, "usage: /heart-attack <DLMM pair address>")
     elif text.startswith("/mirror "):
         try:
             w = text.split()[1]
@@ -837,6 +845,22 @@ def handle_callback(tg, chat, cb_id, data):
         if not wallet_exists():
             tg_send(tg["token"], chat, "❌ no trading wallet. /wallet first")
             return
+        if action == "ha_open":
+            threading.Thread(target=ha_open, args=(tg, chat, ca, float(val)), daemon=True).start()
+            return
+        if action == "ha_close":
+            tg_send(tg["token"], chat, f"❤️ withdrawing Heart Attack position...")
+            try:
+                r = ha_post("/close", {"pair": ca, "positionMint": val})
+                if r.get("error"):
+                    tg_send(tg["token"], chat, f"❌ close failed: {r['error']}")
+                else:
+                    tg_send(tg["token"], chat,
+                            f"✅ <b>HEART ATTACK CLOSED</b> — fees claimed, SOL returned\n"
+                            f"tx: https://solscan.io/tx/{r.get('signature')}\n/balance to verify")
+            except Exception as e:
+                tg_send(tg["token"], chat, f"❌ close error: {e}")
+            return
         if action == "buy":
             amt = float(val)
             tg_send(tg["token"], chat, f"⏳ buying {amt} SOL of <code>{ca[:8]}..</code> ...")
@@ -953,6 +977,103 @@ def best_price_usd(mint):
     except Exception:
         return 0
 
+
+HA_SERVICE = "http://127.0.0.1:8078"  # dlmm_service (runs beside dbc-state on the VPS)
+
+def ha_get(path):
+    req = urllib.request.Request(f"{HA_SERVICE}{path}", headers={"User-Agent": "Mozilla/5.0"})
+    return json.load(urllib.request.urlopen(req, timeout=30))
+
+def ha_post(path, body):
+    data = json.dumps(body).encode()
+    req = urllib.request.Request(f"{HA_SERVICE}{path}", data=data, headers={"User-Agent": "Mozilla/5.0", "Content-Type": "application/json"})
+    return json.load(urllib.request.urlopen(req, timeout=60))
+
+def ha_panel(tg, chat, pair):
+    """Heart Attack setup: pool info + size buttons."""
+    try:
+        info = ha_get(f"/pool-info?pair={pair}")
+        tg_buttons(tg["token"], chat,
+            f"❤️ <b>HEART ATTACK</b> — Curve, 5 bins, centered at price\n"
+            f"active bin: {info.get('activeBinPrice','?')} | bin step: {info.get('binStep')}\n"
+            f"⚠️ in/out in minutes. Set SL/TP after opening.\n"
+            f"Choose size:",
+            [[("❤️ 0.05 SOL", f"ha_open:0.05:{pair}"), ("❤️ 0.1 SOL", f"ha_open:0.1:{pair}")],
+             [("❤️ 0.25 SOL", f"ha_open:0.25:{pair}"), ("❌ cancel", f"noop:0")]])
+    except Exception as e:
+        tg_send(tg["token"], chat, f"❤️ pool error: {e}\n(Is the DLMM pool address correct? Use the pair address from meteora.ag, not the token CA)")
+
+def ha_open(tg, chat, pair, sol_amount):
+    tg_send(tg["token"], chat, f"❤️ opening Heart Attack position ({sol_amount} SOL, Curve 5 bins)...")
+    try:
+        r = ha_post("/open", {"pair": pair, "solAmount": float(sol_amount), "bins": 5})
+        if r.get("error"):
+            tg_send(tg["token"], chat, f"❌ open failed: {r['error']}")
+            return
+        pos_txt = f"position open\nmin bin {r.get('minBin')} / max bin {r.get('maxBin')}"
+        tg_send(tg["token"], chat,
+            f"❤️ <b>HEART ATTACK LIVE</b>\n{pos_txt}\n"
+            f"tx: https://solscan.io/tx/{r.get('signature')}\n\n"
+            f"⏱ PnL card updates every 60s\n"
+            f"🔴 WITHDRAW ALL when happy — before the move dies.\n"
+            f"Minutes, not hours. No greed.")
+        tg_send(tg["token"], chat,
+            f"🎯 <b>SET YOUR EXIT RULES NOW</b>\n"
+            f"/sl {pair} -15\n/tp {pair} +50\n/trail {pair} 20\n"
+            f"(pick one or all - they auto-sell if triggered)")
+    except Exception as e:
+        tg_send(tg["token"], chat, f"❌ open error: {e}")
+
+def ha_pnl_poll(tg, chat):
+    """Every 60s: check the HA position, edit the live PnL card, fire SL/TP."""
+    while True:
+        time.sleep(60)
+        try:
+            from trading_bot import load_positions, position_pnl, load_card, get_rules, load_wallet, record_sell
+            d = load_positions()
+            for mint, p in list(d.items()):
+                if p["tokens"] <= 0: continue
+                r = position_pnl(mint)
+                if not r: continue
+                sym, val_sol, pnl_sol, pnl_pct, tokens = r
+                usd = tokens * (best_price_usd(mint) or 0)
+                card = load_card(mint)
+                if card:
+                    tg_edit(tg["token"], card["chat"], card["msg"],
+                            f"📊 <b>{sym}</b> LIVE — PnL {pnl_pct:+.1f}% ({pnl_sol:+.4f} SOL)\n"
+                            f"Value: ${usd:.2f}\nSell via buttons below ⬇")
+                # SL/TP check
+                rules = get_rules(mint)
+                do_sell_now = False
+                reason = ""
+                if "sl" in rules and pnl_pct <= float(rules["sl"]):
+                    do_sell_now, reason = True, f"STOP LOSS {pnl_pct:.1f}% <= {rules['sl']}%"
+                if "tp" in rules and pnl_pct >= float(rules["tp"]):
+                    do_sell_now, reason = True, f"TAKE PROFIT {pnl_pct:.1f}% >= {rules['tp']}%"
+                if do_sell_now:
+                    kp, pub = load_wallet()
+                    from trading_bot import do_sell as _ds
+                    sig, err = _ds(mint, 100)
+                    if err:
+                        tg_send(tg["token"], chat, f"⚠️ {reason} — sell failed: {err}")
+                    else:
+                        from trading_bot import record_sell
+                        record_sell(mint, 100)
+                        tg_send(tg["token"], chat,
+                                f"🎯 <b>{reason} — AUTO-SOLD 100%</b>\n"
+                                f"tx: https://solscan.io/tx/{sig}")
+        except Exception as e:
+            print("pnl_poll error:", e)
+
+def best_price_usd(mint):
+    try:
+        from trading_bot import get_json
+        dd = get_json(f"https://api.dexscreener.com/latest/dex/tokens/{mint}")
+        ps = dd.get("pairs") or []
+        best = max(ps, key=lambda x: (x.get("liquidity") or {}).get("usd", 0)) if ps else None
+        return float(best["priceUsd"]) if best else 0
+    except Exception:
+        return 0
 def tg_listener(tg, chat):
     offset = load(STATE_PATH, {}).get("tg_offset", 0)
     while True:
@@ -1077,6 +1198,7 @@ def main():
         print("missing telegram token/chat in", CFG_PATH); sys.exit(1)
     threading.Thread(target=tg_listener, args=(tg, chat), daemon=True).start()
     threading.Thread(target=pnl_poll_loop, args=(tg, chat), daemon=True).start()
+    threading.Thread(target=ha_pnl_poll, args=(tg, chat), daemon=True).start()
     radar_loop(tg, chat)
 
 if __name__ == "__main__":
