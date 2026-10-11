@@ -114,10 +114,12 @@ def print_table(rows, title):
     for r in rows:
         print(f"  {r['symbol']:14} {str(r['age_h']) + 'h':>7} "
               f"${r['fdv_k']:>7,}K ${r['vol24_k']:>7,}K  {r['dex']}")
+        if r["dex"] == "meteora-dbc":
+            print(f"  {'':14} CA: {r['mint']}")
 
 
 def scan(mint, symbol, tag=""):
-    print(f"\n🔍 {symbol} ({mint[:12]}...) {tag}")
+    print(f"\n🔍 {symbol} | CA: {mint} {tag}")
     try:
         from dbc_scanner import score_launch
         r = score_launch(mint)
