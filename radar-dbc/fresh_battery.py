@@ -19,20 +19,18 @@ def get_json(url):
 
 def find_fresh_dbc(count=5):
     """Find fresh Meteora DLMM/DBC pairs < 24h old with real volume."""
-    dd = get_json("https://api.dexscreener.com/latest/dex/search?q=meteora%20solana")
+    dd = get_json("https://api.dexscreener.com/latest/dex/search?q=solana")
     ps = dd.get("pairs") or []
     now = time.time() * 1000
     fresh = []
     seen_mints = set()
     for p in ps:
         if p.get("chainId") != "solana": continue
-        labels = p.get("labels") or []
-        if "DLMM" not in str(labels) and "DYN2" not in str(labels): continue
         liq = (p.get("liquidity") or {}).get("usd") or 0
         v24 = (p.get("volume") or {}).get("h24") or 0
         created = p.get("pairCreatedAt") or 0
         age_h = (now - created) / 3600000
-        if liq < 20_000 or v24 < 100_000 or age_h > 24: continue
+        if liq < 10_000 or v24 < 50_000 or age_h > 48: continue
         b = (p.get("baseToken") or {})
         mint = b.get("address", "")
         if mint in seen_mints: continue
