@@ -183,10 +183,90 @@ def score_launch(mint, verbose=False):
     out["tier"] = tier
     return out
 
+# ---------- funding-graph image ----------
+
+def render_graph(mint, trace, path):
+    """Deterministic funding graph: funders -> holders. No external deps beyond matplotlib."""
+    import matplotlib
+    matplotlib.use("Agg")
+    import matplotlib.pyplot as plt
+
+    if not trace:
+        return None
+    holders = trace.get("holders") or []
+    clusters = trace.get("clusters") or {}
+
+    # layout: funders (clusters) left column, holders right column
+    nodes = []          # (label, x, y, kind)
+    edges = []          # (x1,y1,x2,y2, clustered?)
+    funders = list(clusters.keys())
+    y = 1.0
+    fpos = {}
+    if funders:
+        fy = {f: 0.5 + 0.5 * (i - (len(funders)-1)/2) / max(1, len(funders)-1) or 0.5
+              for i, f in enumerate(funders)} if len(funders) > 1 else {funders[0]: 0.75}
+        fpos = fy
+    ind_h = []
+    for r in holders:
+        owner = r["owner"]
+        if any(owner in [x["owner"] for x in rs] for rs in clusters.values()):
+            continue
+        ind_h.append(r)
+    hy = {r["owner"]: 0.62 - 0.6 * i / max(1, len(ind_h)-1 or 1) for i, r in enumerate(ind_h)}
+    # cluster holders grouped next to their funder
+    chys = {}
+    for f, rs in clusters.items():
+        for i, r in enumerate(rs):
+            chys[r["owner"]] = fpos[f] - 0.10 - 0.08 * i
+
+    fig, ax = plt.subplots(figsize=(10, 7), dpi=140)
+    ax.set_xlim(0, 1); ax.set_ylim(0, 1); ax.axis("off")
+
+    # edges first (under nodes)
+    for r in holders:
+        owner = r["owner"]
+        label = owner[:6] + "…" + f" {r['pct']:.1f}%"
+        if owner in chys:
+            f = next(ff for ff, rs in clusters.items() if owner in [x["owner"] for x in rs])
+            ax.plot([0.28, 0.72], [fpos[f], chys[owner]], color="#d9534f", lw=1.6, alpha=0.85, zorder=1)
+            nodes.append((label, 0.72, chys[owner], "cluster"))
+        else:
+            nodes.append((label, 0.72, hy.get(owner, 0.3), "ind"))
+    for f in funders:
+        flabel = f[:8] + "… (shared funder)"
+        nodes.append((flabel, 0.28, fpos[f], "funder"))
+    if not funders and nodes:
+        nodes.append(("no shared funder found", 0.28, 0.75, "clean"))
+
+    for label, x, yy, kind in nodes:
+        if kind == "funder":
+            fc, ec, tc = "#3b2a2a", "#d9534f", "#ffd7d5"
+        elif kind == "cluster":
+            fc, ec, tc = "#2a1f1f", "#d9534f", "#ffb3b0"
+        elif kind == "clean":
+            fc, ec, tc = "#1f2a1f", "#5cb85c", "#c8e6c9"
+        else:
+            fc, ec, tc = "#1f2430", "#8ea3c8", "#dbe6f7"
+        ax.scatter([x], [yy], s=2600 if kind == "funder" else 1900, zorder=2,
+                   facecolor=fc, edgecolor=ec, linewidth=1.4)
+        ax.text(x, yy, label, ha="center", va="center", fontsize=7.5, color=tc, zorder=3)
+
+    ax.text(0.28, 0.97, "FUNDERS", ha="center", fontsize=10, color="#d9534f", weight="bold")
+    ax.text(0.72, 0.97, "TOP HOLDERS", ha="center", fontsize=10, color="#8ea3c8", weight="bold")
+    ax.text(0.5, 0.02, f"Radar-DBC funding graph · {mint[:12]}… · red = shared funder cluster",
+            ha="center", fontsize=8, color="#9aa4b2")
+    fig.patch.set_facecolor("#0d1117")
+    ax.set_facecolor("#0d1117")
+    fig.savefig(path, facecolor=fig.get_facecolor(), bbox_inches="tight")
+    plt.close(fig)
+    return path
+
 def main():
-    if len(sys.argv) < 2:
+    args = [a for a in sys.argv[1:] if not a.startswith("--")]
+    if not args:
         print(__doc__); sys.exit(1)
-    mint = sys.argv[1]
+    mint = args[0]
+    do_graph = "--graph" in sys.argv or "--full" in sys.argv
     print(f"=== RADAR-DBC: {mint} ===")
     r = score_launch(mint)
     if "error" in r:
@@ -194,6 +274,11 @@ def main():
     print(f"Tier: {r['tier']}   Score: {r['score']}/100\n")
     for name, c in r["components"].items():
         print(f"[{name:16}] {c.get('score',0):>2}/30+20+15+15+10+10  { {k:v for k,v in c.items() if k!='score'} }")
+    if do_graph:
+        trace, err = funding_trace(mint)
+        if trace and (trace["clusters"] or trace["holders"]):
+            p = render_graph(mint, trace, f"graph_{mint[:8]}.png")
+            if p: print(f"\nFunding graph saved: {p}")
     print(f"\nScore: {r['score']}/100 — {r['tier']}")
     print("The contract can't rug you. The holders can. Radar reads the holders.")
 
