@@ -127,6 +127,14 @@ def scan(mint, symbol, tag=""):
             print(f"  ERROR: {r['error'][:110]}")
             return None
         print(f"  Score: {r.get('score', 0)}/100 | Tier: {r.get('tier', '?')}")
+        dbc = r.get("dbc") or {}
+        if dbc.get("is_migrated"):
+            target = {0: "dAMM v1", 1: "dAMM v2"}.get(dbc.get("migration_option"),
+                                                       f"option {dbc.get('migration_option')}")
+            print(f"  lifecycle: curve COMPLETE -> migrated to {target}")
+            print(f"             trading now happens on the migrated pool, not the DBC pool")
+        elif dbc.get("curve_progress") is not None:
+            print(f"  lifecycle: ON CURVE ({round((dbc.get('curve_progress') or 0) * 100)}% complete)")
         for name, c in (r.get("components") or {}).items():
             notes = c.get("notes", c.get("note", ""))
             if notes:
@@ -162,7 +170,8 @@ def run_battery(count=5, pages=4):
     results = []
     for f in targets:
         liq_s = f"liq ${f.get('liq_k', f['fdv_k']):.0f}K" if f.get("liq_k") else f"fdv ${f['fdv_k']:.0f}K"
-        r = scan(f["mint"], f["symbol"], tag=f"[{f['age_h']}h, {liq_s}]")
+        r = scan(f["mint"], f["symbol"],
+                 tag=f"[{f['age_h']}h, {liq_s}, pool {f['pool'][:8]}...]")
         if r:
             results.append(r)
         time.sleep(1)
