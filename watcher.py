@@ -232,7 +232,8 @@ def analyze_token(tg, chat, ca, top_n=8):
     if dex and (dex['vol24'] or 0) < 50_000:
         msg += "⚠️ volume under $50K — radar signal weak\n"
     msg += "\n🧵 tracing funding ancestors (top %d)..." % top_n
-    tg_send(tg["token"], chat, msg)
+    tg_buttons(tg["token"], chat, msg,
+               [[("🔄 Refresh", f"rescan:{ca}"), ("❤️ Heart Attack", f"ha:{ca}")]])
     try:
         detail, verdict = insider_trace(ca, rug or {}, top_n)
         tg_send(tg["token"], chat, f"🧵 <b>TRACE RESULT</b>\n{detail}\n{verdict}")
@@ -836,6 +837,14 @@ def handle_callback(tg, chat, cb_id, data):
         parts = data.split(":")
         action, val = parts[0], parts[1]
         ca = parts[2] if len(parts) > 2 else None
+        if action == "rescan":
+            tg_answer_callback(tg["token"], cb_id, "🔄 re-scanning...")
+            threading.Thread(target=analyze_token, args=(tg, chat, ca), daemon=True).start()
+            return
+        if action == "ha":
+            tg_answer_callback(tg["token"], cb_id, "❤️ opening Heart Attack panel...")
+            threading.Thread(target=ha_panel, args=(tg, chat, ca), daemon=True).start()
+            return
         if action == "wallet":
             handle_command(tg, chat, "/wallet", None)
             return
