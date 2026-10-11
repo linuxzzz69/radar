@@ -32,8 +32,8 @@ services:
       - ./radar-ha:/app
       - ./.bot_wallet.json:/app/.bot_wallet.json:ro
     command: sh -c "npm install --omit=dev --no-audit --no-fund && node dlmm_service.js"
-    expose:
-      - "8078"
+    ports:
+      - "127.0.0.1:8078:8078"   # host-only (moves wallet funds, never public)
 
   # DBC on-chain state microservice (official Meteora SDK)
   dbc-state:
@@ -46,8 +46,8 @@ services:
     volumes:
       - ./radar-dbc:/app
     command: sh -c "npm install --omit=dev --no-audit --no-fund && node dbc_state.js"
-    expose:
-      - "8077"
+    ports:
+      - "127.0.0.1:8077:8077"   # host-only, so dbc_scanner/fresh_battery reach it
 
 networks:
   default:
