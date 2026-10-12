@@ -96,9 +96,8 @@ def sign_and_send(keypair, swap_b64):
     from solders.transaction import VersionedTransaction
     raw = b64mod.b64decode(swap_b64)
     vt = VersionedTransaction.from_bytes(raw)
-    # sign: keypair.sign_message(vt.message) -> Signature, then reassemble
-    sig = keypair.sign_message(vt.message)
-    signed = VersionedTransaction(vt.message, [sig])
+    # solders 0.29: the constructor takes keypairs and signs internally
+    signed = VersionedTransaction(vt.message, [keypair])
     # send the signed tx
     body = json.dumps({"jsonrpc": "2.0", "id": 1, "method": "sendTransaction",
                        "params": [b64mod.b64encode(bytes(signed)).decode(),
