@@ -318,8 +318,46 @@ def record_sell(mint, pct):
             del d[mint]
         save_positions(d)
 
+def reconcile_positions():
+    """Chain is truth: add wallet holdings missing from the book (SPL + Token-2022).
+    Survives state wipes, manual wallet usage, anything. Returns list of added mints."""
+    try:
+        _, pub = load_wallet()
+        mints = {}
+        for prog in ("TokenkegQfeZyiNwAJbNbGKPFXCWuBvf9Ss623VQ5DA",   # SPL Token
+                     "TokenzQdBNbLqP5VEhdkAS6EPFLC1PHnBqCXEpPxuEb"):  # Token-2022
+            for url in (RPC, "https://solana-rpc.publicnode.com"):
+                try:
+                    body = json.dumps({"jsonrpc": "2.0", "id": 1, "method": "getTokenAccountsByOwner",
+                                       "params": [pub, {"programId": prog}, {"encoding": "jsonParsed"}]}).encode()
+                    r = json.load(urllib.request.urlopen(urllib.request.Request(url, data=body, headers=UA), timeout=20))
+                    for a in r.get("result", {}).get("value", []):
+                        info = a["account"]["data"]["parsed"]["info"]
+                        ui = float(info["tokenAmount"].get("uiAmount") or 0)
+                        if ui > 0 and info.get("mint") != SOL_MINT:
+                            mints[info["mint"]] = ui
+                    break
+                except Exception:
+                    continue
+        d = load_positions()
+        added = []
+        for mint, ui in mints.items():
+            p = d.get(mint)
+            if not p or p.get("tokens", 0) <= 0:
+                d[mint] = {"symbol": (p or {}).get("symbol", "?"),
+                           "sol_in": (p or {}).get("sol_in", 0.0),
+                           "tokens": ui}
+                added.append(mint)
+        if added:
+            save_positions(d)
+        return added
+    except Exception:
+        return []
+
+
 def positions_overview():
     """Build the Positions Overview card with live prices."""
+    reconcile_positions()  # chain is truth: pull in any holdings missing from the book
     d = load_positions()
     _, pub = load_wallet()
     lines = []
@@ -506,6 +544,17 @@ def hardened_buy(mint, symbol, sol_amount, max_daily=0.5):
         record_buy(mint, symbol, sol_amount, 0)  # tokens resolved from tx on next /positions refresh
     log_trade("buy", mint, symbol, sol_amount, sig=sig, err=err)
     return sig, err
+
+def trade_volume():
+    """(n_buys, sol_bought, n_sells, n_blocked) from the persistent audit log."""
+    d = load(HIST_PATH, {"trades": []})
+    trades = d.get("trades", [])
+    buys = [t for t in trades if t.get("action") == "buy" and not t.get("error")]
+    sells = [t for t in trades if t.get("action") == "sell" and not t.get("error")]
+    blocked = [t for t in trades if t.get("action") == "buy_blocked"]
+    return (len(buys), sum(t.get("sol", 0) or 0 for t in buys),
+            len(sells), len(blocked))
+
 
 def hardened_sell(mint, symbol, pct):
     if is_denied(mint=mint):

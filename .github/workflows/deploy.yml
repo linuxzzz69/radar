@@ -23,6 +23,11 @@ jobs:
           script: |
             set -e
             cd /opt/radar
+            # state files must exist before bind-mounting (docker creates DIRECTORIES otherwise)
+            for f in .bot_positions.json .bot_sltp.json .bot_cards.json .trade_history.json .denylist.json; do
+              [ -d "$f" ] && rm -rf "$f"
+              [ -f "$f" ] || echo '{}' > "$f"
+            done
             git fetch origin
             git reset --hard origin/master
 

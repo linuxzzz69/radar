@@ -388,10 +388,12 @@ def pnl_audit(tg, chat, ca):
 
 
 def portfolio_card(tg, chat):
-    """One card: positions + watch list + uptime."""
+    """One card: positions + volume + watch list + uptime."""
     try:
         cfg2 = load(CFG_PATH, {}) or {}
-        from trading_bot import load_positions, position_pnl, load_wallet, sol_balance
+        from trading_bot import (load_positions, position_pnl, load_wallet,
+                                 sol_balance, reconcile_positions, trade_volume)
+        reconcile_positions()  # chain is truth: pick up any holdings missing from the book
         _, pub = load_wallet()
         sol = sol_balance(pub)
         d = load_positions()
@@ -404,6 +406,7 @@ def portfolio_card(tg, chat):
             sym,val,pnl_sol,pnl_pct,_=r
             net+=val
             lines.append(f"{'🟢' if pnl_pct>=0 else '🔴'} {sym}: {pnl_pct:+.1f}% ({pnl_sol:+.4f} SOL)")
+        n_buys, sol_bought, n_sells, n_blocked = trade_volume()
         wl=cfg2.get("watch",[])
         up=(time.time()-START_TS)/3600
         body="\n".join(lines) if lines else "(no open positions)"
@@ -411,7 +414,10 @@ def portfolio_card(tg, chat):
                 f"📒 <b>PORTFOLIO</b>\n"
                 f"💰 wallet: {sol:.3f} SOL\n"
                 f"📈 positions:\n{body}\n"
-                f"➖ net worth: {net:.3f} SOL\n"
+                f"➖ net worth: {net:.3f} SOL\n\n"
+                f"📊 <b>volume (this book)</b>\n"
+                f"buys: {n_buys} ({sol_bought:.3f} SOL spent)\n"
+                f"sells: {n_sells} | blocked: {n_blocked}\n\n"
                 f"👁 watching {len(wl)} wallets\n"
                 f"⏱ uptime {up:.1f}h")
     except Exception as e:
@@ -1668,7 +1674,10 @@ def tg_listener(tg, chat):
                 cid = (m.get("chat") or {}).get("id")
                 txt = m.get("text") or ""
                 if str(cid) == str(chat) and txt:
-                    handle_command(tg, chat, txt, None)
+                    try:
+                        handle_command(tg, chat, txt, None)
+                    except Exception as e:
+                        tg_send(tg["token"], chat, f"⚠️ bot error: {type(e).__name__}: {e}")
                     st = load(STATE_PATH, {})
                     st["tg_offset"] = offset
                     save(STATE_PATH, st)

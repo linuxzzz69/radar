@@ -8,10 +8,14 @@ services:
     # env_file:
     #   - .env
     volumes:
-      - ./watch_config.json:/app/watch_config.json:ro      # secrets/state stay OUTSIDE the image
+      - ./watch_config.json:/app/watch_config.json:ro      # secrets stay OUTSIDE the image
       - ./watcher_state.json:/app/watcher_state.json
       - ./.bot_wallet.json:/app/.bot_wallet.json:ro        # hot wallet key (mounted, never baked)
-      # log lives INSIDE the container; view with: docker compose logs -f radar-watcher
+      - ./.bot_positions.json:/app/.bot_positions.json     # positions book — MUST survive deploys
+      - ./.bot_sltp.json:/app/.bot_sltp.json               # SL/TP/limit rules
+      - ./.bot_cards.json:/app/.bot_cards.json             # live PnL cards
+      - ./.trade_history.json:/app/.trade_history.json     # audit log + daily cap
+      - ./.denylist.json:/app/.denylist.json               # deny-list
     healthcheck:
       test: ["CMD-SHELL", "python3 -c \"import urllib.request;urllib.request.urlopen('https://api.telegram.org',timeout=10)\""]
       interval: 120s
