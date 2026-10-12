@@ -142,19 +142,35 @@ def trade_cfg():
     }
 
 
-def jup_quote(in_mint, out_mint, amount_raw, direct_only=False, slippage_bps=150):
+def jup_quote_raw(in_mint, out_mint, amount_raw, direct_only=False, slippage_bps=150):
+    """(quote, err). Distinguishes: 'no route found' (API answered, nothing to route)
+    from transient API failures (502/503/timeout) which carry the real message."""
     url = f"{JUP_QUOTE}?inputMint={in_mint}&outputMint={out_mint}&amount={amount_raw}&slippageBps={slippage_bps}"
     if direct_only:
         url += "&onlyDirectRoutes=true"
     try:
-        return json.load(urllib.request.urlopen(urllib.request.Request(url, headers={"User-Agent": UA["User-Agent"]}), timeout=20))
-    except Exception:
-        return None
+        return json.load(urllib.request.urlopen(
+            urllib.request.Request(url, headers={"User-Agent": UA["User-Agent"]}), timeout=20)), None
+    except urllib.error.HTTPError as e:
+        try:
+            msg = e.read().decode()[:300]
+        except Exception:
+            msg = str(e)
+        if "route" in msg.lower():
+            return None, "no route found (no sellable liquidity on any DEX)"
+        return None, f"quote api {e.code}: {msg[:140]}"
+    except Exception as e:
+        return None, f"quote api: {e}"
+
+def jup_quote(in_mint, out_mint, amount_raw, direct_only=False, slippage_bps=150):
+    return jup_quote_raw(in_mint, out_mint, amount_raw,
+                         direct_only=direct_only, slippage_bps=slippage_bps)[0]
 
 def jup_swap_tx(keypair, in_mint, out_mint, amount_raw, direct_only=False, slippage_bps=150):
     """Build a Jupiter swap tx and return it UNSIGNED-ready (bot signs)."""
-    q = jup_quote(in_mint, out_mint, amount_raw, direct_only=direct_only, slippage_bps=slippage_bps)
-    if not q: return None, "no route found"
+    q, qerr = jup_quote_raw(in_mint, out_mint, amount_raw,
+                            direct_only=direct_only, slippage_bps=slippage_bps)
+    if not q: return None, qerr or "no route found"
     tc = trade_cfg()
     body = json.dumps({
         "quoteResponse": q,
