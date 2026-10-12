@@ -265,7 +265,19 @@ def position_pnl(mint):
     """Return (symbol, value_sol, pnl_sol, pnl_pct, tokens) for an open position."""
     d = load_positions()
     p = d.get(mint)
-    if not p or p["tokens"] <= 0: return None
+    if not p: return None
+    # right after a buy, tokens is stored as 0 — resolve from the live chain balance
+    if p.get("tokens", 0) <= 0:
+        try:
+            _, pub = load_wallet()
+            live = token_balance(pub, mint)
+            if live > 0:
+                p["tokens"] = live
+                d[mint] = p
+                save_positions(d)
+        except Exception:
+            pass
+    if p.get("tokens", 0) <= 0: return None
     try:
         dd = get_json(f"https://api.dexscreener.com/latest/dex/tokens/{mint}")
         ps = dd.get("pairs") or []

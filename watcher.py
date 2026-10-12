@@ -840,8 +840,10 @@ def handle_command(tg, chat, text, state):
                 if sol < 0.06:
                     holding = 0
                     try:
-                        from trading_bot import load_positions
+                        from trading_bot import load_positions, token_balance
                         holding = load_positions().get(ca, {}).get("tokens", 0)
+                        if holding <= 0:
+                            holding = token_balance(pub, ca)  # unresolved post-buy record
                     except Exception:
                         pass
                     rows = [[("✏️ Custom", f"buy:custom:{ca}"), ("💼 Positions", "posview:x:x"), ("🔧 /balance", "balance:check")],
@@ -902,8 +904,10 @@ def trade_panel_msg(ca):
         if sol < 0.06:
             holding = 0
             try:
-                from trading_bot import load_positions
+                from trading_bot import load_positions, token_balance
                 holding = load_positions().get(ca, {}).get("tokens", 0)
+                if holding <= 0:
+                    holding = token_balance(pub, ca)  # unresolved post-buy record
             except Exception:
                 pass
             rows = [[("✏️ Custom", f"buy:custom:{ca}"), ("💼 Positions", "posview:x:x"), ("🔧 /balance", "balance:check")],
@@ -956,9 +960,12 @@ def save_offset(new_offset):
 def position_line(ca):
     """"Your position" line with live PnL, if the bot wallet holds this token."""
     try:
-        from trading_bot import load_positions, position_pnl
+        from trading_bot import load_positions, position_pnl, load_wallet, token_balance
         if load_positions().get(ca, {}).get("tokens", 0) <= 0:
-            return ""
+            # unresolved post-buy record: check the live chain balance
+            _, pub_w = load_wallet()
+            if token_balance(pub_w, ca) <= 0:
+                return ""
         r = position_pnl(ca)
         if not r:
             return ""
