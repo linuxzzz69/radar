@@ -211,7 +211,7 @@ def insider_trace(ca, rug, top_n=8):
                if linked >= 3 else f"✅ no strong web ({linked}/{len(results)} linked)")
     return ("\n".join(lines) if lines else "(no shared funders among top holders)"), verdict
 
-def analyze_token(tg, chat, ca, top_n=8):
+def analyze_token(tg, chat, ca, top_n=8, send_panel=True):
     dex, rug = dex_summary(ca), rug_summary(ca)
     if not dex and not rug:
         # could be a seconds-old launch DexScreener hasn't indexed — not necessarily
@@ -263,7 +263,8 @@ def analyze_token(tg, chat, ca, top_n=8):
         tg_send(tg["token"], chat, f"🧵 <b>TRACE RESULT</b>\n{detail}\n{verdict}")
     except Exception as e:
         tg_send(tg["token"], chat, f"🧵 trace failed: {e}")
-    trade_panel_msg(ca)
+    if send_panel:
+        trade_panel_msg(ca)
 
 
 def mirror_wallet(tg, chat, wallet):
@@ -832,7 +833,9 @@ def handle_command(tg, chat, text, state):
                     f"👁 <code>{text[:8]}..{text[-4:]}</code> is a <b>watched wallet</b>, not a token CA.\n"
                     f"Send a token contract address to scan/trade. This wallet is on your watch list.")
             return
-        threading.Thread(target=analyze_token, args=(tg, chat, text), daemon=True).start()
+        # one panel per scan: the immediate send_trade_panel below covers the CA
+        # branch; analyze_token's trailing panel only fires on /rescan
+        threading.Thread(target=analyze_token, args=(tg, chat, text, 8, False), daemon=True).start()
         def send_trade_panel(ca):
             try:
                 from trading_bot import wallet_exists, load_wallet, sol_balance
