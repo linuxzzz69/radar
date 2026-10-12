@@ -1216,7 +1216,7 @@ def wait_balance_settle(pub, before, tries=5, delay=3):
 
 
 def execute_buy(tg, chat, ca, amt):
-    """Shared buy path: panel buttons, /buy command, auto-buy."""
+    """Shared buy path: panel buttons, /buy command, auto-buy. Returns True on success."""
     tg_send(tg["token"], chat, f"⏳ buying {amt} SOL of <code>{ca[:8]}..</code> ...")
     try:
         from trading_bot import hardened_buy, load_wallet, sol_balance as _sol_balance
@@ -1236,30 +1236,32 @@ def execute_buy(tg, chat, ca, amt):
                     f"reason: {err}\n"
                     f"send 0.05+ SOL from your main, or /buy a smaller amount.",
                     [[("🔄 /balance", "balance:check")]])
-            return
+            return False
         if err:
             tg_send(tg["token"], chat, f"❌ buy failed: {err}")
-        else:
-            try:
-                bal_post = wait_balance_settle(pub_pre, bal_pre)
-                fees = max(0.0, bal_pre - bal_post - amt)
-                sol_price = best_price_usd("So11111111111111111111111111111111111111112") or 0
-                fees_usd = fees * sol_price
-                fee_line = (f"⛽ fees+rent: {fees:.4f} SOL (~${fees_usd:.2f})\n"
-                            f"💰 balance: {bal_post:.4f} SOL\n") if fees > 0 else ""
-            except Exception:
-                fee_line = ""
-            tg_buttons(tg["token"], chat,
-                    f"✅ <b>BOUGHT</b> {amt} SOL of {sym}\n"
-                    f"tx: https://solscan.io/tx/{sig}\n"
-                    f"{fee_line}"
-                    f"Manage the position:",
-                    [[("🔴 Sell 25%", f"sell:25:{ca}"), ("🔴 Sell 50%", f"sell:50:{ca}"), ("🔴 Sell 100%", f"sell:100:{ca}")],
-                     [("🎯 TP 2x — sell 50%", f"tpset:100:50:{ca}"),
-                      ("🎯 TP 2x — sell 100%", f"tpset:100:100:{ca}"),
-                      ("🛑 SL -30%", f"slset:-30:x:{ca}")]])
+            return False
+        try:
+            bal_post = wait_balance_settle(pub_pre, bal_pre)
+            fees = max(0.0, bal_pre - bal_post - amt)
+            sol_price = best_price_usd("So11111111111111111111111111111111111111112") or 0
+            fees_usd = fees * sol_price
+            fee_line = (f"⛽ fees+rent: {fees:.4f} SOL (~${fees_usd:.2f})\n"
+                        f"💰 balance: {bal_post:.4f} SOL\n") if fees > 0 else ""
+        except Exception:
+            fee_line = ""
+        tg_buttons(tg["token"], chat,
+                f"✅ <b>BOUGHT</b> {amt} SOL of {sym}\n"
+                f"tx: https://solscan.io/tx/{sig}\n"
+                f"{fee_line}"
+                f"Manage the position:",
+                [[("🔴 Sell 25%", f"sell:25:{ca}"), ("🔴 Sell 50%", f"sell:50:{ca}"), ("🔴 Sell 100%", f"sell:100:{ca}")],
+                 [("🎯 TP 2x — sell 50%", f"tpset:100:50:{ca}"),
+                  ("🎯 TP 2x — sell 100%", f"tpset:100:100:{ca}"),
+                  ("🛑 SL -30%", f"slset:-30:x:{ca}")]])
+        return True
     except Exception as e:
         tg_send(tg["token"], chat, f"buy error: {e}")
+        return False
 
 
 def positions_view(tg, chat):
@@ -1344,9 +1346,9 @@ def handle_callback(tg, chat, cb_id, data):
             from trading_bot import clear_rule
             label = {"b": "buy", "s": "sell"}.get(val, "")
             if val in ("b", "all"):
-                clear_rule(ca, "buy_limit", "buy_limit_sol")
+                clear_rule(ca, "buy_limit", "buy_limit_sol", "buy_limit_att")
             if val in ("s", "all"):
-                clear_rule(ca, "sell_limit", "sell_limit_pct")
+                clear_rule(ca, "sell_limit", "sell_limit_pct", "sell_limit_att")
             tg_send(tg["token"], chat,
                     f"❌ limit {label} cancelled for <code>{ca[:8]}..</code>")
             return
@@ -1507,7 +1509,9 @@ def pnl_poll_loop(tg, chat):
                                     f"tx: https://solscan.io/tx/{sig}")
 
             # --- price-based limit rules (gmgn/screener price == this price) ---
-            from trading_bot import load_sltp, token_price_usd, do_sell, record_sell, clear_rule
+            from trading_bot import (load_sltp, token_price_usd, do_sell, record_sell,
+                                     clear_rule, set_rule, sol_balance as _sb_l,
+                                     load_wallet as _lw_l)
             for mint, rules in list((load_sltp() or {}).items()):
                 if "buy_limit" not in rules and "sell_limit" not in rules:
                     continue
@@ -1518,26 +1522,64 @@ def pnl_poll_loop(tg, chat):
                     tgt = float(rules["buy_limit"])
                     if cur <= tgt:
                         amt = float(rules.get("buy_limit_sol", 0.005))
-                        clear_rule(mint, "buy_limit", "buy_limit_sol")
-                        tg_send(tg["token"], chat,
-                                f"🎯 <b>LIMIT BUY triggered</b>: <code>{mint[:8]}..</code>\n"
-                                f"price ${format(cur, '.10g')} <= target ${tgt} — buying {amt} SOL")
+                        att = int(float(rules.get("buy_limit_att", 0)))
+                        funded = True
                         try:
-                            execute_buy(tg, chat, mint, amt)
-                        except Exception as ex:
-                            tg_send(tg["token"], chat, f"limit buy error: {ex}")
+                            _, _pw = _lw_l()
+                            funded = (_sb_l(_pw) or 0) >= amt + 0.005
+                        except Exception:
+                            pass
+                        if not funded:
+                            # can't pay yet — keep the rule, wait quietly, tell once
+                            if att == 0:
+                                tg_buttons(tg["token"], chat,
+                                        f"🎯 <b>LIMIT BUY triggered</b>: <code>{mint[:8]}..</code> "
+                                        f"at ${format(cur, '.10g')} <= ${tgt:.10g}\n"
+                                        f"⚠️ wallet too low for {amt} SOL — rule KEPT.\n"
+                                        f"Fund the bot wallet and it fills itself. Retrying every 60s.",
+                                        [[("❌ Cancel limit", f"limitcancel:b:{mint}"), ("🔄 /balance", "balance:check")]])
+                            set_rule(mint, "buy_limit_att", att + 1)
+                        else:
+                            if att == 0:
+                                tg_send(tg["token"], chat,
+                                        f"🎯 <b>LIMIT BUY triggered</b>: <code>{mint[:8]}..</code>\n"
+                                        f"price ${format(cur, '.10g')} <= ${tgt:.10g} — buying {amt} SOL")
+                            ok = False
+                            try:
+                                ok = execute_buy(tg, chat, mint, amt)
+                            except Exception as ex:
+                                tg_send(tg["token"], chat, f"limit buy error: {ex}")
+                            if ok:
+                                clear_rule(mint, "buy_limit", "buy_limit_sol", "buy_limit_att")
+                            else:
+                                att += 1
+                                set_rule(mint, "buy_limit_att", att)
+                                if att >= 20:
+                                    clear_rule(mint, "buy_limit", "buy_limit_sol", "buy_limit_att")
+                                    tg_send(tg["token"], chat,
+                                            f"❌ limit buy for <code>{mint[:8]}..</code> gave up after {att} attempts")
                 if "sell_limit" in rules:
                     tgt = float(rules["sell_limit"])
                     pct = int(float(rules.get("sell_limit_pct", 100)))
                     if cur >= tgt:
-                        clear_rule(mint, "sell_limit", "sell_limit_pct")
+                        satt = int(float(rules.get("sell_limit_att", 0)))
                         sig, err = do_sell(mint, pct)
                         if err:
-                            tg_send(tg["token"], chat, f"⚠️ limit sell at ${tgt} failed: {err}")
+                            satt += 1
+                            set_rule(mint, "sell_limit_att", satt)
+                            if satt >= 20:
+                                clear_rule(mint, "sell_limit", "sell_limit_pct", "sell_limit_att")
+                                tg_send(tg["token"], chat,
+                                        f"❌ limit sell for <code>{mint[:8]}..</code> gave up after {satt} attempts")
+                            elif satt == 1:
+                                tg_buttons(tg["token"], chat,
+                                        f"⚠️ limit sell failed: {err}\nrule KEPT — retrying every 60s",
+                                        [[("❌ Cancel limit", f"limitcancel:s:{mint}")]])
                         else:
                             record_sell(mint, pct)
+                            clear_rule(mint, "sell_limit", "sell_limit_pct", "sell_limit_att")
                             tg_send(tg["token"], chat,
-                                    f"🎯 <b>LIMIT SELL triggered</b>: price ${format(cur, '.10g')} >= ${tgt}\n"
+                                    f"🎯 <b>LIMIT SELL triggered</b>: price ${format(cur, '.10g')} >= ${tgt:.10g}\n"
                                     f"SOLD {pct}%\n"
                                     f"tx: https://solscan.io/tx/{sig}")
         except Exception as e:
