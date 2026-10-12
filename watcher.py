@@ -1034,8 +1034,9 @@ def execute_buy(tg, chat, ca, amt):
                     f"✅ <b>BOUGHT</b> {amt} SOL of {sym}\n"
                     f"tx: https://solscan.io/tx/{sig}\n"
                     f"{fee_line}"
-                    f"Set an exit:",
-                    [[("🎯 TP 2x — sell 50%", f"tpset:100:50:{ca}"),
+                    f"Manage the position:",
+                    [[("🔴 Sell 25%", f"sell:25:{ca}"), ("🔴 Sell 50%", f"sell:50:{ca}"), ("🔴 Sell 100%", f"sell:100:{ca}")],
+                     [("🎯 TP 2x — sell 50%", f"tpset:100:50:{ca}"),
                       ("🎯 TP 2x — sell 100%", f"tpset:100:100:{ca}"),
                       ("🛑 SL -30%", f"slset:-30:x:{ca}")]])
     except Exception as e:
