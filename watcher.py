@@ -1247,7 +1247,12 @@ def execute_buy(tg, chat, ca, amt):
         from trading_bot import hardened_buy, load_wallet, sol_balance as _sol_balance
         dd = get_json(f"https://api.dexscreener.com/latest/dex/tokens/{ca}")
         ps = dd.get("pairs") or []
-        sym = (max(ps, key=lambda x:(x.get('liquidity') or {}).get('usd',0)).get('baseToken') or {}).get('symbol','?') if ps else '?'
+        best = max(ps, key=lambda x:(x.get('liquidity') or {}).get('usd',0)) if ps else None
+        sym = (best.get('baseToken') or {}).get('symbol','?') if best else '?'
+        e_mcap = float(best.get("marketCap") or 0) if best else 0
+        e_price = float(best.get("priceUsd") or 0) if best else 0
+        entry_line = (f"📈 entry: mcap ${e_mcap/1e3:,.0f}K | price ${e_price:.10g}\n"
+                      if e_mcap else "")
         _, pub_pre = load_wallet()
         bal_pre = _sol_balance(pub_pre)
         sig, err = hardened_buy(ca, sym, amt)
@@ -1266,6 +1271,8 @@ def execute_buy(tg, chat, ca, amt):
             tg_send(tg["token"], chat, f"❌ buy failed: {err}")
             return False
         try:
+            from trading_bot import record_entry_meta
+            record_entry_meta(ca, e_mcap, e_price)
             bal_post = wait_balance_settle(pub_pre, bal_pre)
             fees = max(0.0, bal_pre - bal_post - amt)
             sol_price = best_price_usd("So11111111111111111111111111111111111111112") or 0
@@ -1277,7 +1284,7 @@ def execute_buy(tg, chat, ca, amt):
         tg_buttons(tg["token"], chat,
                 f"✅ <b>BOUGHT</b> {amt} SOL of {sym}\n"
                 f"tx: https://solscan.io/tx/{sig}\n"
-                f"{fee_line}"
+                f"{entry_line}{fee_line}"
                 f"Manage the position:",
                 [[("🔴 Sell 25%", f"sell:25:{ca}"), ("🔴 Sell 50%", f"sell:50:{ca}"), ("🔴 Sell 100%", f"sell:100:{ca}")],
                  [("🎯 TP 2x — sell 50%", f"tpset:100:50:{ca}"),
@@ -1303,9 +1310,12 @@ def positions_view(tg, chat):
             if not r: continue
             sym, val_sol, pnl_sol, pnl_pct, tokens = r
             entry = d.get(mint, {}).get("sol_in", 0) or 0
+            e_mcap = d.get(mint, {}).get("entry_mcap") or 0
             usd = tokens * (best_price_usd(mint) or 0)
-            lines.append(f"• <b>{esc(sym)}</b> {pnl_pct:+.1f}% ({pnl_sol:+.4f} SOL) — ${usd:.2f}"
-                         + (f" | entry {entry:.4f} SOL" if entry else " | entry unknown"))
+            entry_txt = (f" | entry {entry:.4f} SOL" if entry else " | entry unknown")
+            if e_mcap:
+                entry_txt += f" @ mcap ${e_mcap/1e3:,.0f}K"
+            lines.append(f"• <b>{esc(sym)}</b> {pnl_pct:+.1f}% ({pnl_sol:+.4f} SOL) — ${usd:.2f}{entry_txt}")
             s = sym[:10]
             rows.append([(f"🔴 {s} 25%", f"sell:25:{mint}"),
                          (f"🔴 {s} 50%", f"sell:50:{mint}"),

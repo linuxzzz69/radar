@@ -383,6 +383,18 @@ def reconcile_positions():
         return []
 
 
+def record_entry_meta(mint, mcap, price):
+    """Store entry mcap/price on the position (first buy wins)."""
+    try:
+        d = load_positions()
+        if mint in d:
+            if mcap: d[mint].setdefault("entry_mcap", float(mcap))
+            if price: d[mint].setdefault("entry_price", float(price))
+            save_positions(d)
+    except Exception:
+        pass
+
+
 def positions_overview():
     """Build the Positions Overview card with live prices."""
     reconcile_positions()  # chain is truth: pull in any holdings missing from the book
