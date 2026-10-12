@@ -554,6 +554,8 @@ def handle_command(tg, chat, text, state):
                 "/sl <CA> <pct> - stop-loss (auto-sell at -pct%)\n"
                 "/tp <CA> <pct> - take-profit (2x shorthand: /tp <CA> 2x)\n"
                 "/tp <CA> <pct> <sell%> - partial TP: sell % at target, rest rides (e.g. /tp <CA> 2x 50)\n"
+                "/limitbuy <CA> <priceUSD> [SOL] - buy when price drops to target\n"
+                "/limitsell <CA> <priceUSD> [pct] - sell when price hits target (gmgn price)\n"
                 "/positions - PnL overview\n"
                 "/smart <CA> - find realized-PnL wallets\n"
                 "/pnl <CA> - position audit (smart money status)\n"
@@ -695,10 +697,13 @@ def handle_command(tg, chat, text, state):
             if err:
                 tg_send(tg["token"], chat, f"❌ close failed: {err}")
             else:
+                from trading_bot import clear_rule
+                clear_rule(mint, "sl", "tp", "tp_sell", "trail",
+                           "sell_limit", "sell_limit_pct", "buy_limit", "buy_limit_sol")
                 tg_send(tg["token"], chat,
                         f"🔒 <b>POSITION CLOSED</b> — {sym}\n"
                         f"tx: https://solscan.io/tx/{sig}\n"
-                        f"SL/TP rules cleared. /positions to verify.")
+                        f"All rules cleared (SL/TP/trail/limits). /positions to verify.")
         except Exception as e:
             tg_send(tg["token"], chat, f"usage: /close <CA> ({e})")
     elif text.startswith("/trail "):
@@ -752,6 +757,44 @@ def handle_command(tg, chat, text, state):
                         f"(checked every 60s)")
         except Exception as e:
             tg_send(tg["token"], chat, f"usage: /sl <CA> -30  or  /tp <CA> 100  or  /tp <CA> 2x 50 ({e})")
+    elif text.startswith("/limitbuy "):
+        parts = text.split()
+        if len(parts) < 3:
+            tg_send(tg["token"], chat, "usage: /limitbuy <CA> <priceUSD> [SOL amount]\ne.g. /limitbuy 4uMr.. 0.000019 0.005")
+            return
+        mint, tgt = parts[1], float(parts[2])
+        amt = float(parts[3]) if len(parts) > 3 else 0.005
+        if tgt <= 0 or amt < 0.001:
+            tg_send(tg["token"], chat, "invalid price or amount (min 0.001 SOL)")
+            return
+        cur = best_price_usd(mint) or 0
+        from trading_bot import set_rule
+        set_rule(mint, "buy_limit", tgt)
+        set_rule(mint, "buy_limit_sol", amt)
+        tg_send(tg["token"], chat,
+                f"🎯 <b>LIMIT BUY</b> set: <code>{mint[:8]}..</code>\n"
+                f"triggers when price <= ${tgt}\n"
+                f"{'current: $' + format(cur, '.10g') if cur else '(no price yet — rule waits for data)'}\n"
+                f"buys {amt} SOL | one-shot | checked every 60s")
+    elif text.startswith("/limitsell "):
+        parts = text.split()
+        if len(parts) < 3:
+            tg_send(tg["token"], chat, "usage: /limitsell <CA> <priceUSD> [sell pct]\ne.g. /limitsell 4uMr.. 0.00005 50")
+            return
+        mint, tgt = parts[1], float(parts[2])
+        pct = int(float(parts[3])) if len(parts) > 3 else 100
+        from trading_bot import set_rule, load_positions
+        if mint not in load_positions():
+            tg_send(tg["token"], chat, "no position in that token — /tp instead works off entry price")
+            return
+        cur = best_price_usd(mint) or 0
+        set_rule(mint, "sell_limit", tgt)
+        set_rule(mint, "sell_limit_pct", pct)
+        tg_send(tg["token"], chat,
+                f"🎯 <b>LIMIT SELL</b> set: <code>{mint[:8]}..</code>\n"
+                f"triggers when price >= ${tgt}\n"
+                f"{'current: $' + format(cur, '.10g') if cur else '(no price yet)'}\n"
+                f"sells {pct}% | one-shot | checked every 60s")
     elif text.startswith("/balance"):
         try:
             from trading_bot import load_wallet, sol_balance
@@ -1307,6 +1350,41 @@ def pnl_poll_loop(tg, chat):
                         else:
                             tg_send(tg["token"], chat,
                                     f"🎯 <b>{reason} — AUTO-SOLD 100%</b>\n"
+                                    f"tx: https://solscan.io/tx/{sig}")
+
+            # --- price-based limit rules (gmgn/screener price == this price) ---
+            from trading_bot import load_sltp, token_price_usd, do_sell, record_sell, clear_rule
+            for mint, rules in list((load_sltp() or {}).items()):
+                if "buy_limit" not in rules and "sell_limit" not in rules:
+                    continue
+                cur = token_price_usd(mint)
+                if not cur:
+                    continue  # no live price — never act on missing data
+                if "buy_limit" in rules:
+                    tgt = float(rules["buy_limit"])
+                    if cur <= tgt:
+                        amt = float(rules.get("buy_limit_sol", 0.005))
+                        clear_rule(mint, "buy_limit", "buy_limit_sol")
+                        tg_send(tg["token"], chat,
+                                f"🎯 <b>LIMIT BUY triggered</b>: <code>{mint[:8]}..</code>\n"
+                                f"price ${format(cur, '.10g')} <= target ${tgt} — buying {amt} SOL")
+                        try:
+                            execute_buy(tg, chat, mint, amt)
+                        except Exception as ex:
+                            tg_send(tg["token"], chat, f"limit buy error: {ex}")
+                elif "sell_limit" in rules:
+                    tgt = float(rules["sell_limit"])
+                    pct = int(float(rules.get("sell_limit_pct", 100)))
+                    if cur >= tgt:
+                        clear_rule(mint, "sell_limit", "sell_limit_pct")
+                        sig, err = do_sell(mint, pct)
+                        if err:
+                            tg_send(tg["token"], chat, f"⚠️ limit sell at ${tgt} failed: {err}")
+                        else:
+                            record_sell(mint, pct)
+                            tg_send(tg["token"], chat,
+                                    f"🎯 <b>LIMIT SELL triggered</b>: price ${format(cur, '.10g')} >= ${tgt}\n"
+                                    f"SOLD {pct}%\n"
                                     f"tx: https://solscan.io/tx/{sig}")
         except Exception as e:
             print("pnl_poll error:", e)
