@@ -1549,9 +1549,9 @@ def handle_callback(tg, chat, cb_id, data):
             except Exception:
                 pass
             if val in ("b", "all"):
-                clear_rule(ca, "buy_limit", "buy_limit_sol", "buy_limit_att", "buy_limit_mc")
+                clear_rule(ca, "buy_limit", "buy_limit_sol", "buy_limit_att", "buy_limit_mc", "buy_limit_card")
             if val in ("s", "all"):
-                clear_rule(ca, "sell_limit", "sell_limit_pct", "sell_limit_att", "sell_limit_mc")
+                clear_rule(ca, "sell_limit", "sell_limit_pct", "sell_limit_att", "sell_limit_mc", "sell_limit_card")
             tg_send(tg["token"], chat,
                     f"❌ limit {label} cancelled for <code>{ca[:8]}..</code>")
             return
