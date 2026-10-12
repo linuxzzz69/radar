@@ -403,6 +403,9 @@ def exit_calc(tg, chat, ca, pct):
         from trading_bot import load_wallet
         _, pub = load_wallet()
         bal = token_balance(pub, ca)
+        if bal is None:
+            tg_send(tg["token"], chat, "balance check failed (RPC busy) — try again")
+            return
         if bal <= 0:
             tg_send(tg["token"], chat, "no holding of that token")
             return
@@ -843,7 +846,8 @@ def handle_command(tg, chat, text, state):
                         from trading_bot import load_positions, token_balance
                         holding = load_positions().get(ca, {}).get("tokens", 0)
                         if holding <= 0:
-                            holding = token_balance(pub, ca)  # unresolved post-buy record
+                            hb = token_balance(pub, ca)  # unresolved post-buy record
+                            holding = hb if hb is not None else 0
                     except Exception:
                         pass
                     rows = [[("✏️ Custom", f"buy:custom:{ca}"), ("💼 Positions", "posview:x:x"), ("🔧 /balance", "balance:check")],
@@ -907,7 +911,8 @@ def trade_panel_msg(ca):
                 from trading_bot import load_positions, token_balance
                 holding = load_positions().get(ca, {}).get("tokens", 0)
                 if holding <= 0:
-                    holding = token_balance(pub, ca)  # unresolved post-buy record
+                    hb = token_balance(pub, ca)  # unresolved post-buy record
+                    holding = hb if hb is not None else 0
             except Exception:
                 pass
             rows = [[("✏️ Custom", f"buy:custom:{ca}"), ("💼 Positions", "posview:x:x"), ("🔧 /balance", "balance:check")],

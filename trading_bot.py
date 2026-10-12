@@ -49,25 +49,31 @@ def load_wallet():
     return Keypair.from_bytes(base58.b58decode(d["secret_b58"])), d["pubkey"]
 
 def sol_balance(pubkey):
-    body = json.dumps({"jsonrpc": "2.0", "id": 1, "method": "getBalance", "params": [pubkey]}).encode()
-    try:
-        r = json.load(urllib.request.urlopen(urllib.request.Request(RPC, data=body, headers=UA), timeout=20))
-        return (r.get("result", {}).get("value", 0)) / 1e9
-    except Exception:
-        return 0.0
+    for url in (RPC, "https://solana-rpc.publicnode.com"):
+        try:
+            body = json.dumps({"jsonrpc": "2.0", "id": 1, "method": "getBalance", "params": [pubkey]}).encode()
+            r = json.load(urllib.request.urlopen(urllib.request.Request(url, data=body, headers=UA), timeout=20))
+            return (r.get("result", {}).get("value", 0)) / 1e9
+        except Exception:
+            continue
+    return 0.0
 
 def token_balance(pubkey, mint):
-    body = json.dumps({"jsonrpc": "2.0", "id": 1, "method": "getTokenAccountsByOwner",
-                       "params": [pubkey, {"mint": mint}, {"encoding": "jsonParsed"}]}).encode()
-    try:
-        r = json.load(urllib.request.urlopen(urllib.request.Request(RPC, data=body, headers=UA), timeout=20))
-        total = 0
-        for a in r.get("result", {}).get("value", []):
-            info = a["account"]["data"]["parsed"]["info"]
-            total += int(info["tokenAmount"]["amount"])
-        return total
-    except Exception:
-        return 0
+    """RAW on-chain amount. 0 = confirmed empty. None = both RPCs failed
+    (callers must NOT treat None as 'holds nothing')."""
+    for url in (RPC, "https://solana-rpc.publicnode.com"):
+        try:
+            body = json.dumps({"jsonrpc": "2.0", "id": 1, "method": "getTokenAccountsByOwner",
+                               "params": [pubkey, {"mint": mint}, {"encoding": "jsonParsed"}]}).encode()
+            r = json.load(urllib.request.urlopen(urllib.request.Request(url, data=body, headers=UA), timeout=20))
+            total = 0
+            for a in r.get("result", {}).get("value", []):
+                info = a["account"]["data"]["parsed"]["info"]
+                total += int(info["tokenAmount"]["amount"])
+            return total
+        except Exception:
+            continue
+    return None
 
 def token_amount_ui(pubkey, mint):
     """(ui_amount, decimals) as shown in wallets.
@@ -214,6 +220,8 @@ def do_buy(out_mint, sol_amount):
 def do_sell(mint, pct):
     kp, pub = load_wallet()
     total = token_balance(pub, mint)
+    if total is None:
+        return None, "balance check failed (RPC busy) — tap Sell again"
     if total <= 0: return None, "no token balance to sell"
     raw = int(total * pct / 100)
     return jup_swap_with_retry(kp, mint, SOL_MINT, raw)
