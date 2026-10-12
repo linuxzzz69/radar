@@ -1301,6 +1301,12 @@ def execute_buy(tg, chat, ca, amt):
         best = max(ps, key=lambda x:(x.get('liquidity') or {}).get('usd',0)) if ps else None
         sym = (best.get('baseToken') or {}).get('symbol','?') if best else '?'
         e_mcap = float(best.get("marketCap") or 0) if best else 0
+        if not e_mcap:
+            try:
+                from trading_bot import mcap_usd as _mcu
+                e_mcap = _mcu(ca) or 0      # 3-layer fallback (rate-limits hit the direct field)
+            except Exception:
+                pass
         e_price = float(best.get("priceUsd") or 0) if best else 0
         e_price_str = (best.get("priceUsd") or "") if best else ""
         entry_line = (f"📈 entry: mcap ${e_mcap/1e3:,.0f}K | price ${e_price_str}\n"

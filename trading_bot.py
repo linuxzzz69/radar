@@ -376,19 +376,32 @@ def reconcile_positions():
             p = d.get(mint)
             needs_add = not p or p.get("tokens", 0) <= 0
             needs_sym = (not needs_add) and p.get("symbol", "?") == "?"
-            if needs_add or needs_sym:
+            needs_mc = (not needs_add) and "entry_price" in (p or {}) \
+                       and "entry_mcap" not in (p or {}) and (p or {}).get("entry_price")
+            if needs_add or needs_sym or needs_mc:
                 sym = (p or {}).get("symbol") or "?"
                 if sym == "?":
                     try:
                         dd = get_json(f"https://api.dexscreener.com/latest/dex/tokens/{mint}")
                         ps = dd.get("pairs") or []
-                        best = max(ps, key=lambda x: (x.get("liquidity") or {}).get("usd", 0)) if ps else None
+                        best = max(ps, key=lambda x: (x.get("liquidity") or {}).get("usd") or 0) if ps else None
                         sym = ((best.get("baseToken") or {}).get("symbol") or "?") if best else "?"
                     except Exception:
                         sym = "?"
                 old_sol_in = (p or {}).get("sol_in", 0.0)
                 old_tokens = (p or {}).get("tokens", ui) if p else ui
-                d[mint] = {"symbol": sym, "sol_in": old_sol_in, "tokens": old_tokens}
+                rec = {"symbol": sym, "sol_in": old_sol_in, "tokens": old_tokens}
+                if p:
+                    for k, v in p.items():           # preserve entry_price/entry_mcap etc.
+                        rec.setdefault(k, v)
+                if needs_mc:
+                    try:
+                        sup = token_supply(mint)      # fixed supply for pump tokens -> valid estimate
+                        if sup:
+                            rec["entry_mcap"] = float(p["entry_price"]) * sup
+                    except Exception:
+                        pass
+                d[mint] = rec
                 dirty = True
                 if needs_add:
                     added.append(mint)
