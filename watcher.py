@@ -214,7 +214,31 @@ def insider_trace(ca, rug, top_n=8):
 def analyze_token(tg, chat, ca, top_n=8):
     dex, rug = dex_summary(ca), rug_summary(ca)
     if not dex and not rug:
-        tg_send(tg["token"], chat, f"❌ <code>{ca[:12]}..</code> — no DexScreener/RugCheck data. Invalid CA?")
+        # could be a seconds-old launch DexScreener hasn't indexed — not necessarily
+        # an invalid CA. Probe Jupiter (routes on-chain, no index needed):
+        probe = None
+        try:
+            from trading_bot import jup_quote, SOL_MINT
+            probe = jup_quote(SOL_MINT, ca, 5_000_000)
+        except Exception:
+            probe = None
+        if probe:
+            try:
+                out_f = int(probe.get("outAmount") or 0)
+                quote_txt = f"💰 Jupiter live: 0.005 SOL ≈ {out_f / 1e6:,.0f} tokens\n\n" if out_f else ""
+            except Exception:
+                quote_txt = ""
+            tg_buttons(tg["token"], chat,
+                    f"⚠️ <b>NOT INDEXED YET</b> — seconds-old launch\n"
+                    f"No DexScreener/RugCheck data: the radar can't read it.\n"
+                    f"Buying here is pure lottery — no holders, no price history.\n\n"
+                    f"{quote_txt}"
+                    f"Buy blind via ✏️, or keep tapping 🔄 Rescan until data appears:",
+                    [[("✏️ Custom Buy", f"buy:custom:{ca}"), ("💼 Positions", "posview:x:x"),
+                      ("🔄 Rescan", f"rescan:{ca}")],
+                     [("🔧 /balance", "balance:check")]])
+        else:
+            tg_send(tg["token"], chat, f"❌ <code>{ca[:12]}..</code> — no data and no swap route. Invalid CA?")
         return
     # (trade panel with inline buttons sent separately after the scan)
     if dex:
