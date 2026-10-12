@@ -283,7 +283,8 @@ def jup_swap_with_retry(keypair, in_mint, out_mint, amount_raw, retries=7):
             if "too large" in s.lower() and not direct:
                 direct = True
                 continue
-            if "custom program error" in s or "slippage" in s.lower():
+            if ("custom program error" in s or "slippage" in s.lower()
+                    or "simulation failed" in s.lower()):
                 if slip_idx < len(SLIP_LADDER) - 1:
                     slip_idx += 1
                     continue
@@ -291,6 +292,9 @@ def jup_swap_with_retry(keypair, in_mint, out_mint, amount_raw, retries=7):
                     direct = True
                     slip_idx = 0
                     continue
+            if "500" in s or "502" in s or "503" in s or "unavailable" in s.lower():
+                time.sleep(2 * (i + 1))
+                continue
             return sig, serr
         last = err
         s = str(err)
@@ -305,8 +309,8 @@ def jup_swap_with_retry(keypair, in_mint, out_mint, amount_raw, retries=7):
                 direct = True
                 slip_idx = 0
                 continue
-        if "502" in s or "503" in s or "unavailable" in s.lower():
-            time.sleep(3 * (i + 1))
+        if "500" in s or "502" in s or "503" in s or "unavailable" in s.lower():
+            time.sleep(2 * (i + 1))
             continue
         break
     return None, last
