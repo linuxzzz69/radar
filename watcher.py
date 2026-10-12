@@ -496,6 +496,7 @@ def handle_command(tg, chat, text, state):
                 "/wallet - create trading wallet (once)\n"
                 "/export - show private key ONCE (backup it!)\n"
                 "/balance - bot wallet SOL balance\n"
+                "/buy CA SOL - custom amount buy (e.g. /buy 8ZLB... 0.005)\n"
                 "/status - radar health\n"
                 "/add <addr> <label> <funder|smart> [min_sol]\n"
                 "/remove <addr>\n"
@@ -691,6 +692,22 @@ def handle_command(tg, chat, text, state):
             tg_send(tg["token"], chat, f"📍 <code>{pub}</code>\n💰 SOL: {sol:.4f}")
         except Exception:
             tg_send(tg["token"], chat, "no wallet yet. /wallet first")
+    elif text.startswith("/buy "):
+        parts = text.split()
+        if len(parts) < 3:
+            tg_send(tg["token"], chat,
+                    "usage: /buy CA SOL\nexample: /buy 8ZLBPRmxMhJPZ9ZAryKyxZHrcMTiSbxEtqCdTxABGZEc 0.005")
+            return
+        ca = parts[1]
+        try:
+            amt = float(parts[2])
+        except ValueError:
+            tg_send(tg["token"], chat, "amount must be a number, e.g. 0.005")
+            return
+        if amt < 0.001:
+            tg_send(tg["token"], chat, "min custom buy: 0.001 SOL")
+            return
+        threading.Thread(target=execute_buy, args=(tg, chat, ca, amt), daemon=True).start()
     elif text.startswith("/status"):
         cfg = load(CFG_PATH, {})
         up = (time.time() - START_TS) / 3600
@@ -782,13 +799,12 @@ def handle_command(tg, chat, text, state):
                     return
                 if sol < 0.06:
                     tg_buttons(tg["token"], chat,
-                            f"⚡ <b>TRADE PANEL</b> — <code>{pub[:8]}..</code>\n💰 {sol:.3f} SOL — fund this address, then tap Buy.",
-                            [[("🟢 Buy 0.05", f"buy:0.05:{ca}"), ("🟢 Buy 0.1", f"buy:0.1:{ca}"), ("🟢 Buy 0.25", f"buy:0.25:{ca}")],
-                             [("🔧 /balance", "balance:check")]])
+                            f"⚡ <b>TRADE PANEL</b> — <code>{pub[:8]}..</code>\n💰 {sol:.4f} SOL — presets need 0.06+, or buy any amount via Custom.",
+                            [[("✏️ Custom", f"buy:custom:{ca}"), ("🔧 /balance", "balance:check")]])
                     return
                 tg_buttons(tg["token"], chat,
                         f"⚡ <b>TRADE PANEL</b> — <code>{pub[:8]}..</code> ({sol:.3f} SOL)\nTap a button — the bot signs and executes instantly.",
-                        [[("🟢 Buy 0.05", f"buy:0.05:{ca}"), ("🟢 Buy 0.1", f"buy:0.1:{ca}"), ("🟢 Buy 0.25", f"buy:0.25:{ca}")],
+                        [[("🟢 Buy 0.05", f"buy:0.05:{ca}"), ("🟢 Buy 0.1", f"buy:0.1:{ca}"), ("🟢 Buy 0.25", f"buy:0.25:{ca}"), ("✏️ Custom", f"buy:custom:{ca}")],
                          [("🔴 Sell 25%", f"sell:25:{ca}"), ("🔴 Sell 50%", f"sell:50:{ca}"), ("🔴 Sell 100%", f"sell:100:{ca}")]])
             except Exception as e:
                 tg_send(tg["token"], chat, f"trade panel error: {e}")
@@ -834,13 +850,12 @@ def trade_panel_msg(ca):
             return
         if sol < 0.06:
             tg_buttons(tg["token"], chat,
-                    f"⚡ <b>TRADE PANEL</b> — <code>{pub[:8]}..</code>\n💰 {sol:.3f} SOL — fund this address, then tap Buy.",
-                    [[("🟢 Buy 0.05", f"buy:0.05:{ca}"), ("🟢 Buy 0.1", f"buy:0.1:{ca}"), ("🟢 Buy 0.25", f"buy:0.25:{ca}")],
-                     [("🔧 /balance", "balance:check")]])
+                    f"⚡ <b>TRADE PANEL</b> — <code>{pub[:8]}..</code>\n💰 {sol:.4f} SOL — presets need 0.06+, or buy any amount via Custom.",
+                    [[("✏️ Custom", f"buy:custom:{ca}"), ("🔧 /balance", "balance:check")]])
             return
         tg_buttons(tg["token"], chat,
                 f"⚡ <b>TRADE PANEL</b> — <code>{pub[:8]}..</code> ({sol:.3f} SOL)\nTap a button — the bot signs and executes instantly.",
-                [[("🟢 Buy 0.05", f"buy:0.05:{ca}"), ("🟢 Buy 0.1", f"buy:0.1:{ca}"), ("🟢 Buy 0.25", f"buy:0.25:{ca}")],
+                [[("🟢 Buy 0.05", f"buy:0.05:{ca}"), ("🟢 Buy 0.1", f"buy:0.1:{ca}"), ("🟢 Buy 0.25", f"buy:0.25:{ca}"), ("✏️ Custom", f"buy:custom:{ca}")],
                  [("🔴 Sell 25%", f"sell:25:{ca}"), ("🔴 Sell 50%", f"sell:50:{ca}"), ("🔴 Sell 100%", f"sell:100:{ca}")]])
     except Exception as e:
         try:
@@ -875,6 +890,36 @@ def save_offset(new_offset):
     st = load(STATE_PATH, {})
     st["tg_offset"] = new_offset
     save(STATE_PATH, st)
+
+def execute_buy(tg, chat, ca, amt):
+    """Shared buy path: panel buttons, /buy command, auto-buy."""
+    tg_send(tg["token"], chat, f"⏳ buying {amt} SOL of <code>{ca[:8]}..</code> ...")
+    try:
+        from trading_bot import hardened_buy, load_wallet, sol_balance as _sol_balance
+        dd = get_json(f"https://api.dexscreener.com/latest/dex/tokens/{ca}")
+        ps = dd.get("pairs") or []
+        sym = (max(ps, key=lambda x:(x.get('liquidity') or {}).get('usd',0)).get('baseToken') or {}).get('symbol','?') if ps else '?'
+        sig, err = hardened_buy(ca, sym, amt)
+        if err and ("insufficient" in str(err) or "Fund" in str(err) or "0.000" in str(err)):
+            kp2, pub2 = load_wallet()
+            bal = _sol_balance(pub2)
+            tg_buttons(tg["token"], chat,
+                    f"💰 <b>Fund the wallet to enable trading</b>\n"
+                    f"<code>{pub2}</code>\n"
+                    f"balance: {bal:.4f} SOL — send 0.1-0.2 SOL from your main,\n"
+                    f"or use /buy with a smaller amount. One-time fuel, then one-tap trading.",
+                    [[("🔄 /balance", "balance:check")]])
+            return
+        if err:
+            tg_send(tg["token"], chat, f"❌ buy failed: {err}")
+        else:
+            tg_send(tg["token"], chat,
+                    f"✅ <b>BOUGHT</b> {amt} SOL of {sym}\n"
+                    f"tx: https://solscan.io/tx/{sig}\n"
+                    f"/balance to check")
+    except Exception as e:
+        tg_send(tg["token"], chat, f"buy error: {e}")
+
 
 def handle_callback(tg, chat, cb_id, data):
     """data format: buy:<amount>:<ca>  or  sell:<pct>:<ca>"""
@@ -915,6 +960,11 @@ def handle_callback(tg, chat, cb_id, data):
         if action == "jupbuy":
             handle_callback(tg, chat, cb_id, f"buy:{val}:{ca}")
             return
+        if action == "buy" and val == "custom":
+            tg_send(tg["token"], chat,
+                    f"✏️ custom buy — type:\n\n<code>/buy {ca} 0.005</code>\n\n"
+                    f"(replace 0.005 with any SOL amount)")
+            return
         from trading_bot import wallet_exists, load_wallet, do_buy, do_sell, token_balance
         if not wallet_exists():
             tg_send(tg["token"], chat, "❌ no trading wallet. /wallet first")
@@ -936,30 +986,7 @@ def handle_callback(tg, chat, cb_id, data):
                 tg_send(tg["token"], chat, f"❌ close error: {e}")
             return
         if action == "buy":
-            amt = float(val)
-            tg_send(tg["token"], chat, f"⏳ buying {amt} SOL of <code>{ca[:8]}..</code> ...")
-            from trading_bot import hardened_buy, sol_balance as _sol_balance
-            dd = get_json(f"https://api.dexscreener.com/latest/dex/tokens/{ca}")
-            ps = dd.get("pairs") or []
-            sym = (max(ps, key=lambda x:(x.get('liquidity') or {}).get('usd',0)).get('baseToken') or {}).get('symbol','?') if ps else '?'
-            sig, err = hardened_buy(ca, sym, amt)
-            if err and ("insufficient" in str(err) or "Fund" in str(err) or "0.000" in str(err)):
-                kp2, pub2 = load_wallet()
-                bal = _sol_balance(pub2)
-                tg_buttons(tg["token"], chat,
-                        f"💰 <b>Fund the wallet to enable trading</b>\n"
-                        f"<code>{pub2}</code>\n"
-                        f"balance: {bal:.3f} SOL — send 0.1-0.2 SOL from your main,\n"
-                        f"then tap Buy again. One-time fuel, then one-tap trading.",
-                        [[("🔄 /balance", "balance:check")]])
-                return
-            if err:
-                tg_send(tg["token"], chat, f"❌ buy failed: {err}")
-            else:
-                tg_send(tg["token"], chat,
-                        f"✅ <b>BOUGHT</b> {amt} SOL of {sym}\n"
-                        f"tx: https://solscan.io/tx/{sig}\n"
-                        f"/balance to check")
+            execute_buy(tg, chat, ca, float(val))
         elif action == "sell":
             pct = int(val)
             tg_send(tg["token"], chat, f"⏳ selling {pct}% of <code>{ca[:8]}..</code> ...")
