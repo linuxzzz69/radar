@@ -981,6 +981,21 @@ def position_line(ca):
         return ""
 
 
+def wait_balance_settle(pub, before, tries=5, delay=3):
+    """Wait for a just-sent tx to land: poll until the balance moves (max ~15s)."""
+    try:
+        from trading_bot import sol_balance
+        for _ in range(tries):
+            time.sleep(delay)
+            b = sol_balance(pub)
+            if b != before:
+                return b
+        return b
+    except Exception:
+        time.sleep(delay)
+        return before
+
+
 def execute_buy(tg, chat, ca, amt):
     """Shared buy path: panel buttons, /buy command, auto-buy."""
     tg_send(tg["token"], chat, f"⏳ buying {amt} SOL of <code>{ca[:8]}..</code> ...")
@@ -1007,8 +1022,7 @@ def execute_buy(tg, chat, ca, amt):
             tg_send(tg["token"], chat, f"❌ buy failed: {err}")
         else:
             try:
-                time.sleep(5)  # let the tx land before measuring fees
-                bal_post = _sol_balance(pub_pre)
+                bal_post = wait_balance_settle(pub_pre, bal_pre)
                 fees = max(0.0, bal_pre - bal_post - amt)
                 sol_price = best_price_usd("So11111111111111111111111111111111111111112") or 0
                 fees_usd = fees * sol_price
@@ -1165,8 +1179,7 @@ def handle_callback(tg, chat, cb_id, data):
             else:
                 line = ""
                 try:
-                    time.sleep(5)  # let the sell tx land before measuring
-                    bal_post = _sb(pub_s)
+                    bal_post = wait_balance_settle(pub_s, bal_pre)
                     net = bal_post - bal_pre
                     sp = best_price_usd("So11111111111111111111111111111111111111112") or 0
                     if net > 0:

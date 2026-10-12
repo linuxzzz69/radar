@@ -78,14 +78,37 @@ def token_amount_ui(pubkey, mint):
     except Exception:
         return 0.0, 0
 
+def jup_price_usd(mint):
+    """Jupiter price API fallback (USD via USDC)."""
+    try:
+        d = get_json(f"https://lite-api.jup.ag/price/v3?ids={mint}")
+        p = str((((d.get("data") or {}).get(mint)) or {}).get("price") or "0")
+        return float(p) or 0.0
+    except Exception:
+        return 0.0
+
+def token_price_usd(mint):
+    """DexScreener best-pair price, Jupiter fallback."""
+    try:
+        dd = get_json(f"https://api.dexscreener.com/latest/dex/tokens/{mint}")
+        ps = dd.get("pairs") or []
+        best = max(ps, key=lambda x: (x.get("liquidity") or {}).get("usd", 0)) if ps else None
+        if best and best.get("priceUsd"):
+            return float(best["priceUsd"])
+    except Exception:
+        pass
+    return jup_price_usd(mint)
+
 def sol_price_usd():
     try:
         dd = get_json("https://api.dexscreener.com/latest/dex/tokens/So11111111111111111111111111111111111111112")
         ps = dd.get("pairs") or []
         best = max(ps, key=lambda x: (x.get("liquidity") or {}).get("usd", 0)) if ps else None
-        return float(best["priceUsd"]) if best and best.get("priceUsd") else 0.0
+        if best and best.get("priceUsd"):
+            return float(best["priceUsd"])
     except Exception:
-        return 0.0
+        pass
+    return jup_price_usd("So11111111111111111111111111111111111111112")
 
 def jup_quote(in_mint, out_mint, amount_raw, direct_only=False):
     url = f"{JUP_QUOTE}?inputMint={in_mint}&outputMint={out_mint}&amount={amount_raw}&slippageBps=150"
@@ -334,19 +357,13 @@ def position_pnl(mint):
         except Exception:
             pass
     if p.get("tokens", 0) <= 0: return None
-    try:
-        dd = get_json(f"https://api.dexscreener.com/latest/dex/tokens/{mint}")
-        ps = dd.get("pairs") or []
-        best = max(ps, key=lambda x: (x.get("liquidity") or {}).get("usd", 0)) if ps else None
-        price_usd = float(best["priceUsd"]) if best and best.get("priceUsd") else 0
-        sym = (best["baseToken"]["symbol"] if best else p["symbol"]) or "?"
-    except Exception:
-        price_usd, sym = 0, p["symbol"]
+    price_usd = token_price_usd(mint)
     if not price_usd:
-        return None  # no live price — never compute (or auto-trade on) a fake PnL
+        return None  # no live price from either source — never compute a fake PnL
     sp = sol_price_usd()
     if not sp:
-        return None  # no SOL price — same rule
+        return None
+    sym = p.get("symbol") or "?"
     usd = p["tokens"] * price_usd
     val_sol = usd / sp
     pnl_sol = val_sol - p["sol_in"]
