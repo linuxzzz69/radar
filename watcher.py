@@ -1150,16 +1150,18 @@ def trade_panel_msg(ca):
             pass
 
 def tg_buttons(token, chat, text, buttons, reply_to=None):
-    """buttons: list of (label, callback_data)"""
+    """buttons: list of (label, callback_data). Returns the sent message_id."""
     kb = {"inline_keyboard": [[{"text": l, "callback_data": c} for (l, c) in row]
                                for row in buttons]}
     data = urllib.parse.urlencode({"chat_id": chat, "text": text, "parse_mode": "HTML",
                                    "reply_markup": json.dumps(kb)}).encode()
     try:
-        urllib.request.urlopen(urllib.request.Request(
-            f"https://api.telegram.org/bot{token}/sendMessage", data=data), timeout=15)
+        r = json.load(urllib.request.urlopen(urllib.request.Request(
+            f"https://api.telegram.org/bot{token}/sendMessage", data=data), timeout=15))
+        return (r.get("result") or {}).get("message_id")
     except Exception as e:
         print("tg buttons failed:", e)
+        return None
 
 def tg_answer_callback(token, cb_id, text=None):
     data = urllib.parse.urlencode({"callback_query_id": cb_id, "text": text or ""}).encode()
@@ -1291,6 +1293,17 @@ def execute_buy(tg, chat, ca, amt):
                  [("🎯 TP 2x — sell 50%", f"tpset:100:50:{ca}"),
                   ("🎯 TP 2x — sell 100%", f"tpset:100:100:{ca}"),
                   ("🛑 SL -30%", f"slset:-30:x:{ca}")]])
+        # make this receipt a LIVE card: pnl_poll edits it every 60s with real PnL + mcap
+        try:
+            from trading_bot import save_card
+            sent_msg = tg_buttons(tg["token"], chat, f"📊 <b>{sym}</b> LIVE\n"
+                                f"entry: mcap ${e_mcap/1e3:,.0f}K\n"
+                                f"position updating every 60s...",
+                                [[("🔄 Rescan", f"rescan:{ca}"), ("💼 Positions", "posview:x:x")]])
+            if sent_msg:
+                save_card(ca, chat, sent_msg)
+        except Exception:
+            pass
         return True
     except Exception as e:
         tg_send(tg["token"], chat, f"buy error: {e}")
@@ -1449,14 +1462,31 @@ def handle_callback(tg, chat, cb_id, data):
         elif action == "sell":
             pct = int(val)
             tg_send(tg["token"], chat, f"⏳ selling {pct}% of <code>{ca[:8]}..</code> ...")
-            from trading_bot import hardened_sell, load_wallet, sol_balance as _sb
+            from trading_bot import hardened_sell, load_wallet, load_positions, sol_balance as _sb, load_card
             _, pub_s = load_wallet()
             bal_pre = _sb(pub_s)
-            sig, err = hardened_sell(ca, "?", pct)
+            # entry basis + exit context (before the sell mutates the book)
+            pre_rec = (load_positions() or {}).get(ca) or {}
+            sol_in = float(pre_rec.get("sol_in", 0) or 0)
+            entry_mcap = float(pre_rec.get("entry_mcap", 0) or 0)
+            sym_x = pre_rec.get("symbol") or "?"
+            x_mcap_k = x_price_str = 0
+            try:
+                dds = get_json(f"https://api.dexscreener.com/latest/dex/tokens/{ca}")
+                bpp = dds.get("pairs") or []
+                bests = max(bpp, key=lambda x: (x.get("liquidity") or {}).get("usd", 0)) if bpp else None
+                if bests:
+                    x_mcap_k = round((bests.get("marketCap") or 0) / 1e3)
+                    x_price_str = bests.get("priceUsd") or ""
+                    sym_x = (bests.get("baseToken") or {}).get("symbol") or sym_x
+            except Exception:
+                pass
+            sig, err = hardened_sell(ca, sym_x, pct)
             if err:
                 tg_send(tg["token"], chat, f"❌ sell failed: {err}")
             else:
                 line = ""
+                pnl_line = ""
                 try:
                     bal_post = wait_balance_settle(pub_s, bal_pre)
                     net = bal_post - bal_pre
@@ -1466,13 +1496,29 @@ def handle_callback(tg, chat, cb_id, data):
                                 f"💰 balance: {bal_post:.4f} SOL\n")
                     else:
                         line = f"⛽ fees: {abs(net):.4f} SOL | 💰 balance: {bal_post:.4f} SOL\n"
+                    if net > 0 and sol_in > 0:
+                        entry_portion = sol_in * pct / 100
+                        pnl_sol = net - entry_portion
+                        pnl_usd = pnl_sol * sp
+                        e_note = f" (entry was {entry_portion:.4f} SOL @ mcap ${entry_mcap/1e3:,.0f}K)" if entry_mcap else ""
+                        pnl_line = (f"📊 <b>PnL</b>: {pnl_sol:+.4f} SOL ({pnl_usd:+.2f}$)"
+                                    f" — {pnl_sol/entry_portion*100:+.1f}%{e_note}\n")
                 except Exception:
                     pass
+                exit_line = (f"📉 exit: mcap ${x_mcap_k:,.0f}K | price ${x_price_str}\n" if x_mcap_k else "")
                 tg_send(tg["token"], chat,
-                        f"✅ <b>SOLD</b> {pct}% of <code>{ca[:8]}..</code>\n"
+                        f"✅ <b>SOLD</b> {pct}% of {esc(sym_x)}\n"
                         f"tx: https://solscan.io/tx/{sig}\n"
-                        f"{line}"
-                        f"/positions for PnL")
+                        f"{exit_line}{line}{pnl_line}"
+                        f"/positions for the rest")
+                # close the LIVE card so it stops showing stale PnL
+                try:
+                    card = load_card(ca)
+                    if card and pct >= 100:
+                        tg_edit(tg["token"], card["chat"], card["msg"],
+                                f"📊 <b>{esc(sym_x)}</b> — POSITION CLOSED ✅")
+                except Exception:
+                    pass
     except Exception as e:
         tg_send(tg["token"], chat, f"trade error: {e}")
 
@@ -1493,6 +1539,10 @@ def pnl_poll_loop(tg, chat):
         time.sleep(60)
         try:
             from trading_bot import load_positions, position_pnl, load_card, get_rules, load_wallet, do_sell, sol_balance
+            try:
+                from trading_bot import sol_price_usd as _sp_l
+            except Exception:
+                _sp_l = lambda: 0.0
             d = load_positions()
             for mint, p in list(d.items()):
                 # position_pnl resolves post-buy 0-token records from the chain
@@ -1500,11 +1550,25 @@ def pnl_poll_loop(tg, chat):
                 if not r: continue
                 sym, val_sol, pnl_sol, pnl_pct, tokens = r
                 usd = tokens * (best_price_usd(mint) or 0)
+                mcap_k = 0
+                entry_mcap_k = (p.get("entry_mcap") or 0) / 1e3
+                try:
+                    ddm = get_json(f"https://api.dexscreener.com/latest/dex/tokens/{mint}")
+                    bpp = (ddm.get("pairs") or [])
+                    bestm = max(bpp, key=lambda x: (x.get("liquidity") or {}).get("usd", 0)) if bpp else None
+                    mcap_k = round((bestm.get("marketCap") or 0) / 1e3) if bestm else 0
+                except Exception:
+                    pass
+                sp_l = _sp_l() or 0
+                pnl_usd = pnl_sol * sp_l
                 card = load_card(mint)
                 if card:
+                    e_line = f" | entry mcap ${entry_mcap_k:,.0f}K" if entry_mcap_k else ""
                     tg_edit(tg["token"], card["chat"], card["msg"],
-                            f"📊 <b>{sym}</b> LIVE — PnL {pnl_pct:+.1f}% ({pnl_sol:+.4f} SOL)\n"
-                            f"Value: ${usd:.2f}\nSell via buttons below ⬇")
+                            f"📊 <b>{sym}</b> LIVE\n"
+                            f"mcap: ${mcap_k:,.0f}K{e_line} | value: ${usd:.2f}\n"
+                            f"PnL: {pnl_pct:+.1f}% | {pnl_sol:+.4f} SOL ({pnl_usd:+.2f}$)\n"
+                            f"updates every 60s")
                 # SL/TP check
                 rules = get_rules(mint)
                 do_sell_now = False
