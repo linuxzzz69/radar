@@ -621,8 +621,8 @@ def clear_all_limits():
     for mint, rules in list(d.items()):
         if not any(k in rules for k in ("buy_limit", "sell_limit", "buy_limit_mc", "sell_limit_mc")):
             continue
-        for k in ("buy_limit", "buy_limit_sol", "buy_limit_att", "buy_limit_mc",
-                   "sell_limit", "sell_limit_pct", "sell_limit_att", "sell_limit_mc"):
+        for k in ("buy_limit", "buy_limit_sol", "buy_limit_att", "buy_limit_mc", "buy_limit_card",
+                   "sell_limit", "sell_limit_pct", "sell_limit_att", "sell_limit_mc", "sell_limit_card"):
             rules.pop(k, None)
         if not rules:
             d.pop(mint)

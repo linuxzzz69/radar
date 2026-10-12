@@ -861,9 +861,15 @@ def handle_command(tg, chat, text, state):
                 head = (f"🎯 <b>LIMIT BUY</b> set: <code>{mint[:8]}..</code>\n"
                         f"{token_brief(mint)}"
                         f"triggers when price <= ${tgt:.10g}{dist}\n")
-            tg_buttons(tg["token"], chat,
+            mid = tg_buttons(tg["token"], chat,
                     head + f"buys {amt} SOL | one-shot | checked every 60s",
                     [[("❌ Cancel", f"limitcancel:b:{mint}"), ("🔄 Token", f"rescan:{mint}")]])
+            try:
+                if mid:
+                    from trading_bot import set_rule as _sr_card
+                    _sr_card(mint, "buy_limit_card", {"chat": chat, "msg": mid})
+            except Exception:
+                pass
         except (ValueError, IndexError):
             tg_send(tg["token"], chat,
                     "usage: /limitbuy <CA> <price | mc:MCAP> [SOL]\n"
@@ -904,9 +910,15 @@ def handle_command(tg, chat, text, state):
                 head = (f"🎯 <b>LIMIT SELL</b> set: <code>{mint[:8]}..</code>\n"
                         f"{token_brief(mint)}"
                         f"triggers when price >= ${tgt:.10g}{dist}\n")
-            tg_buttons(tg["token"], chat,
+            mid = tg_buttons(tg["token"], chat,
                     head + f"sells {pct}% | one-shot | checked every 60s",
                     [[("❌ Cancel", f"limitcancel:s:{mint}"), ("🔄 Token", f"rescan:{mint}")]])
+            try:
+                if mid:
+                    from trading_bot import set_rule as _sr_card
+                    _sr_card(mint, "sell_limit_card", {"chat": chat, "msg": mid})
+            except Exception:
+                pass
         except (ValueError, IndexError):
             tg_send(tg["token"], chat,
                     "usage: /limitsell <CA> <price | mc:MCAP> [pct]\n"
@@ -1518,6 +1530,24 @@ def handle_callback(tg, chat, cb_id, data):
                         (f" ({len(cleared)} tokens)" if cleared else " (nothing to cancel)"))
                 return
             label = {"b": "buy", "s": "sell"}.get(val, "")
+            try:
+                # flip the live card to its final state before the rule (and card ref) is cleared
+                from trading_bot import get_rules
+                cks = (["buy_limit_card"] if val in ("b",) else []) + \
+                      (["sell_limit_card"] if val in ("s",) else [])
+                if val == "b":
+                    cks = ["buy_limit_card"]
+                elif val == "s":
+                    cks = ["sell_limit_card"]
+                else:
+                    cks = ["buy_limit_card", "sell_limit_card"]
+                for ck in cks:
+                    card = (get_rules(ca) or {}).get(ck)
+                    if card:
+                        tg_edit(tg["token"], card["chat"], card["msg"],
+                                f"🎯 <b>LIMIT {label.upper() if label else ''}</b> — <code>{ca[:8]}..</code> CANCELLED ❌")
+            except Exception:
+                pass
             if val in ("b", "all"):
                 clear_rule(ca, "buy_limit", "buy_limit_sol", "buy_limit_att", "buy_limit_mc")
             if val in ("s", "all"):
@@ -1745,6 +1775,27 @@ def pnl_poll_loop(tg, chat):
                     continue
                 cur = token_price_usd(mint) if (hb_p or hs_p) else 0
                 cur_mc = mcap_usd(mint) if (hb_m or hs_m) else 0
+                # LIVE limit cards: edit the armed order's message with fresh data
+                for side, ckey, rkey in (("buy", "buy_limit_card", ("buy_limit", "buy_limit_mc")),
+                                          ("sell", "sell_limit_card", ("sell_limit", "sell_limit_mc"))):
+                    card = rules.get(ckey)
+                    if not card:
+                        continue
+                    try:
+                        tgt_v = float(rules.get(rkey[0]) or rules.get(rkey[1]) or 0)
+                        is_mc = rkey[1] in rules and rkey[0] not in rules
+                        curv = cur_mc if is_mc else cur
+                        if curv and tgt_v:
+                            dist = (tgt_v - curv) / curv * 100
+                            fmt = (lambda v: f"${v/1e3:,.0f}K") if is_mc else (lambda v: f"${format(v, '.10g')}")
+                            tg_edit(tg["token"], card["chat"], card["msg"],
+                                    f"🎯 <b>LIMIT {side.upper()} (MCAP)</b> — <code>{mint[:8]}..</code> ARMED\n" if is_mc else
+                                    f"🎯 <b>LIMIT {side.upper()}</b> — <code>{mint[:8]}..</code> ARMED\n"
+                                    f"target: {'>=' if side == 'sell' else '<='} {fmt(tgt_v)}\n"
+                                    f"now: {fmt(curv)} ({dist:+.1f}% away)\n"
+                                    f"checking every 60s")
+                    except Exception:
+                        pass
                 # BUY trigger: either condition met (never act on missing data)
                 buy_trig = ""
                 if hb_p and cur and cur <= float(rules["buy_limit"]):
@@ -1781,12 +1832,26 @@ def pnl_poll_loop(tg, chat):
                         except Exception as ex:
                             tg_send(tg["token"], chat, f"limit buy error: {ex}")
                         if ok:
-                            clear_rule(mint, "buy_limit", "buy_limit_sol", "buy_limit_att", "buy_limit_mc")
+                            try:
+                                card = rules.get("buy_limit_card")
+                                if card:
+                                    tg_edit(tg["token"], card["chat"], card["msg"],
+                                            f"🎯 <b>LIMIT BUY</b> — <code>{mint[:8]}..</code> FILLED ✅")
+                            except Exception:
+                                pass
+                            clear_rule(mint, "buy_limit", "buy_limit_sol", "buy_limit_att", "buy_limit_mc", "buy_limit_card")
                         else:
                             att += 1
                             set_rule(mint, "buy_limit_att", att)
                             if att >= 20:
-                                clear_rule(mint, "buy_limit", "buy_limit_sol", "buy_limit_att", "buy_limit_mc")
+                                try:
+                                    card = rules.get("buy_limit_card")
+                                    if card:
+                                        tg_edit(tg["token"], card["chat"], card["msg"],
+                                                f"🎯 <b>LIMIT BUY</b> — <code>{mint[:8]}..</code> gave up after {att} attempts ❌")
+                                except Exception:
+                                    pass
+                                clear_rule(mint, "buy_limit", "buy_limit_sol", "buy_limit_att", "buy_limit_mc", "buy_limit_card")
                                 tg_send(tg["token"], chat,
                                         f"❌ limit buy for <code>{mint[:8]}..</code> gave up after {att} attempts")
                 # SELL trigger: either condition met
@@ -1817,7 +1882,14 @@ def pnl_poll_loop(tg, chat):
                                     [[("❌ Cancel limit", f"limitcancel:s:{mint}"), ("🔄 /balance", "balance:check")]])
                     else:
                         record_sell(mint, pct)
-                        clear_rule(mint, "sell_limit", "sell_limit_pct", "sell_limit_att", "sell_limit_mc")
+                        try:
+                            card = rules.get("sell_limit_card")
+                            if card:
+                                tg_edit(tg["token"], card["chat"], card["msg"],
+                                        f"🎯 <b>LIMIT SELL</b> — <code>{mint[:8]}..</code> FILLED ✅")
+                        except Exception:
+                            pass
+                        clear_rule(mint, "sell_limit", "sell_limit_pct", "sell_limit_att", "sell_limit_mc", "sell_limit_card")
                         tg_send(tg["token"], chat,
                                 f"🎯 <b>LIMIT SELL triggered</b>: {sell_trig}\n"
                                 f"SOLD {pct}%\n"
