@@ -1220,9 +1220,12 @@ def position_line(ca):
             return f"📊 <b>YOUR POSITION</b>: {ui:,.4f} (price unavailable)\n"
         sym, val_sol, pnl_sol, pnl_pct, tokens = r
         usd = tokens * (best_price_usd(ca) or 0)
+        e_mcap = (load_positions().get(ca) or {}).get("entry_mcap") or 0
+        e_txt = f" | entry @ mcap ${e_mcap/1e3:,.0f}K" if e_mcap else ""
         emoji = "🟢" if pnl_pct >= 0 else "🔴"
+        pnl_usd = pnl_sol * (best_price_usd("So11111111111111111111111111111111111111112") or 0)
         return (f"{emoji} <b>YOUR POSITION</b>: {tokens:,.4f} {esc(sym)}\n"
-                f"PnL {pnl_pct:+.1f}% ({pnl_sol:+.4f} SOL) | ${usd:.2f}\n")
+                f"PnL {pnl_pct:+.1f}% ({pnl_sol:+.4f} SOL / {pnl_usd:+.2f}$){e_txt}\n")
     except Exception:
         return ""
 
@@ -1329,6 +1332,16 @@ def positions_view(tg, chat):
             entry_txt = (f" | entry {entry:.4f} SOL" if entry else " | entry unknown")
             if e_mcap:
                 entry_txt += f" @ mcap ${e_mcap/1e3:,.0f}K"
+            mcap_now = 0
+            try:
+                ddm = get_json(f"https://api.dexscreener.com/latest/dex/tokens/{mint}")
+                bpp = ddm.get("pairs") or []
+                bestm = max(bpp, key=lambda x: (x.get("liquidity") or {}).get("usd", 0)) if bpp else None
+                mcap_now = round((bestm.get("marketCap") or 0) / 1e3) if bestm else 0
+            except Exception:
+                pass
+            if mcap_now:
+                entry_txt += f" | now ${mcap_now:,.0f}K"
             lines.append(f"• <b>{esc(sym)}</b> {pnl_pct:+.1f}% ({pnl_sol:+.4f} SOL) — ${usd:.2f}{entry_txt}")
             s = sym[:10]
             rows.append([(f"🔴 {s} 25%", f"sell:25:{mint}"),
