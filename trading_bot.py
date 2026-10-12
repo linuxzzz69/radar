@@ -87,16 +87,18 @@ def sol_price_usd():
     except Exception:
         return 0.0
 
-def jup_quote(in_mint, out_mint, amount_raw):
+def jup_quote(in_mint, out_mint, amount_raw, direct_only=False):
     url = f"{JUP_QUOTE}?inputMint={in_mint}&outputMint={out_mint}&amount={amount_raw}&slippageBps=150"
+    if direct_only:
+        url += "&onlyDirectRoutes=true"
     try:
         return json.load(urllib.request.urlopen(urllib.request.Request(url, headers={"User-Agent": UA["User-Agent"]}), timeout=20))
     except Exception:
         return None
 
-def jup_swap_tx(keypair, in_mint, out_mint, amount_raw):
+def jup_swap_tx(keypair, in_mint, out_mint, amount_raw, direct_only=False):
     """Build a Jupiter swap tx and return it UNSIGNED-ready (bot signs)."""
-    q = jup_quote(in_mint, out_mint, amount_raw)
+    q = jup_quote(in_mint, out_mint, amount_raw, direct_only=direct_only)
     if not q: return None, "no route found"
     body = json.dumps({
         "quoteResponse": q,
@@ -112,6 +114,9 @@ def jup_swap_tx(keypair, in_mint, out_mint, amount_raw):
         return None, f"swap api: {e}"
     b64 = swap.get("swapTransaction")
     if not b64: return None, "no swapTransaction returned"
+    import base64 as _b
+    if len(_b.b64decode(b64)) > 1232:
+        return None, "tx too large for network packet (1232B) — needs direct route"
     return b64, q
 
 def sign_and_send(keypair, swap_b64):
@@ -136,14 +141,26 @@ def sign_and_send(keypair, swap_b64):
             last = str(e); continue
     return None, str(last)
 
-def jup_swap_with_retry(keypair, in_mint, out_mint, amount_raw, retries=3):
-    """Full swap with Jupiter API retry (lite-api flaps 502/503)."""
+def jup_swap_with_retry(keypair, in_mint, out_mint, amount_raw, retries=4):
+    """Full swap with Jupiter API retry (lite-api flaps 502/503)
+    and direct-route fallback when the multi-hop tx exceeds the 1232B packet limit."""
     last = None
+    direct = False
     for i in range(retries):
-        b64, err = jup_swap_tx(keypair, in_mint, out_mint, amount_raw)
+        b64, err = jup_swap_tx(keypair, in_mint, out_mint, amount_raw, direct_only=direct)
         if b64:
-            return sign_and_send(keypair, b64)
+            sig, serr = sign_and_send(keypair, b64)
+            if sig:
+                return sig, None
+            last = serr
+            if serr and "too large" in str(serr).lower():
+                direct = True
+                continue
+            return sig, serr
         last = err
+        if err and "too large" in str(err).lower() and not direct:
+            direct = True
+            continue
         if err and ("502" in str(err) or "503" in str(err) or "unavailable" in str(err).lower()):
             time.sleep(3 * (i + 1)); continue
         break
