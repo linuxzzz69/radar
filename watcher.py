@@ -846,6 +846,7 @@ def handle_command(tg, chat, text, state):
             cur = best_price_usd(mint) or 0
             from trading_bot import set_rule, mcap_usd
             set_rule(mint, "buy_limit_sol", amt)
+            set_rule(mint, "buy_limit_att", 0)  # fresh rule = fresh retry budget
             if mc_mode:
                 set_rule(mint, "buy_limit_mc", tgt)
                 cur_mc = mcap_usd(mint) or 0
@@ -887,6 +888,7 @@ def handle_command(tg, chat, text, state):
                         "/rules shows everything the bot is tracking.")
                 return
             set_rule(mint, "sell_limit_pct", pct)
+            set_rule(mint, "sell_limit_att", 0)  # fresh rule = fresh retry budget
             if mc_mode:
                 set_rule(mint, "sell_limit_mc", tgt)
                 cur_mc = mcap_usd(mint) or 0
@@ -1747,14 +1749,14 @@ def pnl_poll_loop(tg, chat):
                             clear_rule(mint, "sell_limit", "sell_limit_pct", "sell_limit_att", "sell_limit_mc")
                             tg_send(tg["token"], chat,
                                     f"❌ limit sell for <code>{mint[:8]}..</code> gave up after {satt} attempts")
-                        elif satt == 1:
+                        elif satt == 1 or satt % 5 == 0:
                             try:
                                 _b = _sb_l(_lw_l()[1]) or 0
                                 bal_note = f"\nwallet: {_b:.4f} SOL" + (" — too low, top up 0.05+ SOL" if _b < 0.01 else "")
                             except Exception:
                                 bal_note = ""
                             tg_buttons(tg["token"], chat,
-                                    f"⚠️ limit sell failed: {err}\nrule KEPT — retrying every 60s{bal_note}",
+                                    f"⚠️ limit sell failed (attempt {satt}): {err}\nrule KEPT — retrying every 60s{bal_note}",
                                     [[("❌ Cancel limit", f"limitcancel:s:{mint}"), ("🔄 /balance", "balance:check")]])
                     else:
                         record_sell(mint, pct)
