@@ -487,6 +487,27 @@ def watchlist_show(tg, chat):
     tg_send(tg["token"], chat, f"👁 <b>WATCH LIST ({len(wl)})</b>\n{body}")
 
 def handle_command(tg, chat, text, state):
+    # custom-buy reply flow: after tapping ✏️ Custom, a bare number is the amount
+    st_c = load(STATE_PATH, {}) or {}
+    pend = st_c.get("pending_custom")
+    if pend:
+        st_c.pop("pending_custom", None)
+        save(STATE_PATH, st_c)
+        if time.time() - pend.get("ts", 0) < 600:
+            tok = (text or "").strip().split()
+            try:
+                amt_c = float(tok[0]) if tok else -1.0
+            except ValueError:
+                amt_c = -1.0
+            if amt_c >= 0.001:
+                mint_p = pend.get("mint", "")
+                tg_send(tg["token"], chat, f"✏️ custom buy: {amt_c} SOL of <code>{mint_p[:8]}..</code>")
+                threading.Thread(target=execute_buy, args=(tg, chat, mint_p, amt_c), daemon=True).start()
+                return
+            if amt_c >= 0:
+                tg_send(tg["token"], chat, "min custom buy: 0.001 SOL — tap ✏️ Custom again")
+                return
+            # not a number: cancelled silently, fall through to normal handling
     text = text.strip()
     if text.startswith("/help") or text == "/start":
         tg_send(tg["token"], chat,
@@ -981,9 +1002,13 @@ def handle_callback(tg, chat, cb_id, data):
             handle_callback(tg, chat, cb_id, f"buy:{val}:{ca}")
             return
         if action == "buy" and val == "custom":
+            st_c = load(STATE_PATH, {}) or {}
+            st_c["pending_custom"] = {"mint": ca, "ts": time.time()}
+            save(STATE_PATH, st_c)
             tg_send(tg["token"], chat,
-                    f"✏️ custom buy — type:\n\n<code>/buy {ca} 0.005</code>\n\n"
-                    f"(replace 0.005 with any SOL amount)")
+                    f"✏️ how much SOL for <code>{ca[:8]}..</code>?\n"
+                    f"reply with just the amount (e.g. 0.005)\n"
+                    f"any other message cancels")
             return
         from trading_bot import wallet_exists, load_wallet, do_buy, do_sell, token_balance
         if not wallet_exists():
@@ -1326,8 +1351,10 @@ def radar_loop(tg, chat):
                 seen.setdefault(addr, {})[s["signature"]] = s.get("blockTime") or 0
             if len(seen[addr]) > 500:
                 seen[addr] = dict(sorted(seen[addr].items(), key=lambda kv: -kv[1])[:300])
-            save(STATE_PATH, {"seen": seen, "known_children": known_children,
-                              "tg_offset": load(STATE_PATH, {}).get("tg_offset", 0)})
+            st_all = load(STATE_PATH, {}) or {}
+            st_all.update({"seen": seen, "known_children": known_children,
+                           "tg_offset": st_all.get("tg_offset", 0)})
+            save(STATE_PATH, st_all)
 
             for s in fresh[:6]:
                 info = summarize_transfer(tx_details(s["signature"]))
