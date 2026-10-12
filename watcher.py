@@ -758,43 +758,54 @@ def handle_command(tg, chat, text, state):
         except Exception as e:
             tg_send(tg["token"], chat, f"usage: /sl <CA> -30  or  /tp <CA> 100  or  /tp <CA> 2x 50 ({e})")
     elif text.startswith("/limitbuy "):
-        parts = text.split()
-        if len(parts) < 3:
-            tg_send(tg["token"], chat, "usage: /limitbuy <CA> <priceUSD> [SOL amount]\ne.g. /limitbuy 4uMr.. 0.000019 0.005")
-            return
-        mint, tgt = parts[1], float(parts[2])
-        amt = float(parts[3]) if len(parts) > 3 else 0.005
-        if tgt <= 0 or amt < 0.001:
-            tg_send(tg["token"], chat, "invalid price or amount (min 0.001 SOL)")
-            return
-        cur = best_price_usd(mint) or 0
-        from trading_bot import set_rule
-        set_rule(mint, "buy_limit", tgt)
-        set_rule(mint, "buy_limit_sol", amt)
-        tg_send(tg["token"], chat,
-                f"🎯 <b>LIMIT BUY</b> set: <code>{mint[:8]}..</code>\n"
-                f"triggers when price <= ${tgt}\n"
-                f"{'current: $' + format(cur, '.10g') if cur else '(no price yet — rule waits for data)'}\n"
-                f"buys {amt} SOL | one-shot | checked every 60s")
+        try:
+            parts = text.split()
+            if len(parts) < 3:
+                raise ValueError("missing price")
+            mint = parts[1]
+            tgt = parse_price(parts[2])
+            amt = parse_price(parts[3]) if len(parts) > 3 else 0.005
+            if tgt <= 0 or amt < 0.001:
+                tg_send(tg["token"], chat, "invalid price or amount (min 0.001 SOL)")
+                return
+            cur = best_price_usd(mint) or 0
+            from trading_bot import set_rule
+            set_rule(mint, "buy_limit", tgt)
+            set_rule(mint, "buy_limit_sol", amt)
+            tg_send(tg["token"], chat,
+                    f"🎯 <b>LIMIT BUY</b> set: <code>{mint[:8]}..</code>\n"
+                    f"triggers when price <= ${tgt:.10g}\n"
+                    f"{'current: $' + format(cur, '.10g') if cur else '(no price yet — rule waits for data)'}\n"
+                    f"buys {amt} SOL | one-shot | checked every 60s")
+        except (ValueError, IndexError):
+            tg_send(tg["token"], chat,
+                    "usage: /limitbuy <CA> <price> [SOL]\n"
+                    "price accepts gmgn notation: 0.0₅134 = 0.00000134\n"
+                    "example: /limitbuy HFTxNjdy.. 0.0₅134 0.005")
     elif text.startswith("/limitsell "):
-        parts = text.split()
-        if len(parts) < 3:
-            tg_send(tg["token"], chat, "usage: /limitsell <CA> <priceUSD> [sell pct]\ne.g. /limitsell 4uMr.. 0.00005 50")
-            return
-        mint, tgt = parts[1], float(parts[2])
-        pct = int(float(parts[3])) if len(parts) > 3 else 100
-        from trading_bot import set_rule, load_positions
-        if mint not in load_positions():
-            tg_send(tg["token"], chat, "no position in that token — /tp instead works off entry price")
-            return
-        cur = best_price_usd(mint) or 0
-        set_rule(mint, "sell_limit", tgt)
-        set_rule(mint, "sell_limit_pct", pct)
-        tg_send(tg["token"], chat,
-                f"🎯 <b>LIMIT SELL</b> set: <code>{mint[:8]}..</code>\n"
-                f"triggers when price >= ${tgt}\n"
-                f"{'current: $' + format(cur, '.10g') if cur else '(no price yet)'}\n"
-                f"sells {pct}% | one-shot | checked every 60s")
+        try:
+            parts = text.split()
+            if len(parts) < 3:
+                raise ValueError("missing price")
+            mint = parts[1]
+            tgt = parse_price(parts[2])
+            pct = int(float(parts[3])) if len(parts) > 3 else 100
+            from trading_bot import set_rule, load_positions
+            if mint not in load_positions():
+                tg_send(tg["token"], chat, "no position in that token — /tp works off entry price instead")
+                return
+            cur = best_price_usd(mint) or 0
+            set_rule(mint, "sell_limit", tgt)
+            set_rule(mint, "sell_limit_pct", pct)
+            tg_send(tg["token"], chat,
+                    f"🎯 <b>LIMIT SELL</b> set: <code>{mint[:8]}..</code>\n"
+                    f"triggers when price >= ${tgt:.10g}\n"
+                    f"{'current: $' + format(cur, '.10g') if cur else '(no price yet)'}\n"
+                    f"sells {pct}% | one-shot | checked every 60s")
+        except (ValueError, IndexError):
+            tg_send(tg["token"], chat,
+                    "usage: /limitsell <CA> <price> [pct]\n"
+                    "price accepts gmgn notation: 0.0₅134 = 0.00000134")
     elif text.startswith("/balance"):
         try:
             from trading_bot import load_wallet, sol_balance
@@ -1031,6 +1042,20 @@ def save_offset(new_offset):
     st = load(STATE_PATH, {})
     st["tg_offset"] = new_offset
     save(STATE_PATH, st)
+
+def parse_price(s):
+    """Accepts plain decimals (0.00000134), scientific (1.34e-6),
+    and gmgn/DEX subscript notation (0.0₅134 = 0.0 + 5 zeros + 134)."""
+    import re as _re2
+    s = str(s).strip()
+    sub = {"₀": "0", "₁": "1", "₂": "2", "₃": "3", "₄": "4",
+           "₅": "5", "₆": "6", "₇": "7", "₈": "8", "₉": "9"}
+    m = _re2.match(r"^0\.0([₀-₉]+)(\d+)$", s)
+    if m:
+        zeros = "".join(sub[c] for c in m.group(1) if c in sub)
+        return float("0." + "0" * int(zeros) + m.group(2))
+    return float(s)  # plain / scientific
+
 
 def position_line(ca):
     """"Your position" line with live PnL, if the bot wallet holds this token."""
