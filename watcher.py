@@ -967,7 +967,7 @@ def position_line(ca):
         else:
             _, pub_w = load_wallet()
             ui, _dec = token_amount_ui(pub_w, ca)
-            if ui <= 0:
+            if ui is None or ui <= 0:
                 return ""
         r = position_pnl(ca)
         if not r:

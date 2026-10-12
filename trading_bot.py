@@ -70,19 +70,23 @@ def token_balance(pubkey, mint):
         return 0
 
 def token_amount_ui(pubkey, mint):
-    """(ui_amount, decimals) as shown in wallets. ui_amount is 0 if no account."""
-    body = json.dumps({"jsonrpc": "2.0", "id": 1, "method": "getTokenAccountsByOwner",
-                       "params": [pubkey, {"mint": mint}, {"encoding": "jsonParsed"}]}).encode()
-    try:
-        r = json.load(urllib.request.urlopen(urllib.request.Request(RPC, data=body, headers=UA), timeout=20))
-        ui, dec = 0.0, 0
-        for a in r.get("result", {}).get("value", []):
-            ta = a["account"]["data"]["parsed"]["info"]["tokenAmount"]
-            ui += float(ta.get("uiAmount") or 0)
-            dec = int(ta.get("decimals") or 0)
-        return ui, dec
-    except Exception:
-        return 0.0, 0
+    """(ui_amount, decimals) as shown in wallets.
+    (0, 0) = account checked, genuinely empty.
+    (None, None) = both RPCs failed — caller must NOT treat this as 'no position'."""
+    for url in (RPC, "https://solana-rpc.publicnode.com"):
+        try:
+            body = json.dumps({"jsonrpc": "2.0", "id": 1, "method": "getTokenAccountsByOwner",
+                               "params": [pubkey, {"mint": mint}, {"encoding": "jsonParsed"}]}).encode()
+            r = json.load(urllib.request.urlopen(urllib.request.Request(url, data=body, headers=UA), timeout=20))
+            ui, dec = 0.0, 0
+            for a in r.get("result", {}).get("value", []):
+                ta = a["account"]["data"]["parsed"]["info"]["tokenAmount"]
+                ui += float(ta.get("uiAmount") or 0)
+                dec = int(ta.get("decimals") or 0)
+            return ui, dec
+        except Exception:
+            continue
+    return None, None
 
 def jup_price_usd(mint):
     """Jupiter price API fallback (USD). v3 format: {"<mint>": {"usdPrice": ...}}"""
@@ -265,11 +269,15 @@ def positions_overview():
             # post-buy unresolved record: try resolving from the live chain
             try:
                 ui, _dec = token_amount_ui(pub, mint)
+                if ui is None:
+                    # RPC failed — show the position as pending instead of hiding it
+                    lines.append(f"/{p.get('symbol', '?')} ⏳ (balance check busy — retry /positions)")
+                    continue
                 if ui > 0:
                     p["tokens"] = ui
                     save_positions(d)
                 else:
-                    continue
+                    continue  # confirmed: wallet holds none
             except Exception:
                 continue
         if p["tokens"] <= 0: continue
@@ -359,6 +367,8 @@ def position_pnl(mint):
         try:
             _, pub = load_wallet()
             ui, _dec = token_amount_ui(pub, mint)
+            if ui is None:
+                return None  # RPC failed — no fake data, engine skips this cycle
             if ui > 0:
                 p["tokens"] = ui
                 d[mint] = p
