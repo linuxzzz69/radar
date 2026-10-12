@@ -19,3 +19,15 @@ package-lock.json
 .venv/
 .env
 node_modules/
+
+# internal planning docs (keep local, never push)
+BOT-ROADMAP.md
+BOT-SESSION-SUMMARY.md
+content-plan.md
+gmgn-filter-all.json
+gmgn-filters.md
+heart-attack-strategy.md
+reply-style.md
+satsmonkes-playbook.md
+submission-form.md
+radar-dbc/X-THREAD.md
