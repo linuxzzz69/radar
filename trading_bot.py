@@ -129,7 +129,7 @@ def sol_price_usd():
         pass
     return jup_price_usd("So11111111111111111111111111111111111111112")
 
-SLIP_LADDER = [150, 500, 1000]  # bps: 1.5% -> 5% -> 10% (fresh launches move fast)
+SLIP_LADDER = [150, 500, 1000, 2000]  # bps: 1.5% -> 5% -> 10% -> 20% (hot launches move fast)
 
 def trade_cfg():
     """Live-reload trading settings from watch_config.json 'trading' block.
