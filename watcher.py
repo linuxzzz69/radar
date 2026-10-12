@@ -1037,7 +1037,7 @@ def handle_command(tg, chat, text, state):
         t["autosell_pct"] = pct
         save(CFG_PATH, cfg2)
         tg_send(tg["token"], chat,
-                f"🎯 <b>auto-sell ON</b> — every auto-buy now auto-arms TP at <b>{mult}x</b> "
+                f"🎯 <b>auto-sell ON</b> — every auto-buy now auto-arms TP at <b>{mult:g}x</b> "
                 f"(sell {pct}%" + (", rest rides" if pct < 100 else "") + ")\n"
                 f"checked every 60s once the position has a live price")
     elif text.startswith("/cancelall"):
