@@ -623,6 +623,7 @@ def handle_command(tg, chat, text, state):
                 "/limitsell <CA> <price | mc:MCAP> [pct] - sell at price OR mcap (mc:100K)\n"
                 "/rules - all active rules (SL/TP/trail/limits) + current prices\n"
                 "/cancelall - cancel ALL limit buys/sells at once\n"
+                "/sellall - dump every open position at market NOW\n"
                 "/positions - PnL overview\n"
                 "/smart <CA> - find realized-PnL wallets\n"
                 "/pnl <CA> - position audit (smart money status)\n"
@@ -960,6 +961,8 @@ def handle_command(tg, chat, text, state):
                 tg_send(tg["token"], chat, out)
         except Exception as e:
             tg_send(tg["token"], chat, f"rules error: {e}")
+    elif text == "/sellall":
+        threading.Thread(target=sell_all_positions, args=(tg, chat), daemon=True).start()
     elif text.startswith("/cancelall"):
         from trading_bot import clear_all_limits
         cleared = clear_all_limits()
@@ -1356,6 +1359,50 @@ def execute_buy(tg, chat, ca, amt):
         return False
 
 
+def sell_all_positions(tg, chat):
+    """Sell EVERY open position at market. One-shot dump."""
+    try:
+        from trading_bot import (reconcile_positions, load_positions, do_sell, record_sell,
+                                 load_wallet, sol_balance as _sb, clear_rule)
+        reconcile_positions()
+        d = load_positions()
+        held = {m: p for m, p in d.items() if p.get("tokens", 0) > 0}
+        if not held:
+            tg_send(tg["token"], chat, "💼 no open positions to sell")
+            return
+        _, pub = load_wallet()
+        bal_pre = _sb(pub)
+        tg_send(tg["token"], chat,
+                f"💰 <b>SELL ALL</b> — dumping {len(held)} position(s) at market...")
+        sold, failed = [], []
+        for mint, p in held.items():
+            sym = p.get("symbol") or "?"
+            sig, err = do_sell(mint, 100)
+            if err:
+                failed.append(f"{sym}: {err}")
+                tg_send(tg["token"], chat, f"❌ {esc(sym)} — {err}")
+            else:
+                record_sell(mint, 100)
+                # position gone: clear its sell-side rules so the engine doesn't retry ghosts
+                clear_rule(mint, "sl", "tp", "tp_sell", "trail",
+                           "sell_limit", "sell_limit_pct", "sell_limit_att", "sell_limit_mc")
+                sold.append(sym)
+                tg_send(tg["token"], chat,
+                        f"✅ <b>SOLD 100%</b> {esc(sym)}\ntx: https://solscan.io/tx/{sig}")
+            time.sleep(1)
+        bal_post = wait_balance_settle(pub, bal_pre)
+        net = bal_post - bal_pre
+        sp = best_price_usd("So11111111111111111111111111111111111111112") or 0
+        sumtxt = (f"💰 <b>SELL ALL complete</b> — {len(sold)} sold, {len(failed)} failed\n"
+                  f"⛽ total received: +{net:.4f} SOL (~${net * sp:.2f})\n"
+                  f"💰 balance: {bal_post:.4f} SOL")
+        if failed:
+            sumtxt += "\n" + "\n".join(f"⚠️ {f}" for f in failed)
+        tg_send(tg["token"], chat, sumtxt)
+    except Exception as e:
+        tg_send(tg["token"], chat, f"sell all error: {e}")
+
+
 def positions_view(tg, chat):
     """All open positions with PnL detail + per-position sell buttons."""
     try:
@@ -1394,6 +1441,7 @@ def positions_view(tg, chat):
         if not rows:
             tg_send(tg["token"], chat, "💼 no open positions")
             return
+        rows.append([("💰 Sell ALL (market)", "sellall:x:x")])
         tg_buttons(tg["token"], chat,
                    "💼 <b>Positions</b>\n" + "\n".join(lines) + "\nSell any position:",
                    rows)
@@ -1448,6 +1496,9 @@ def handle_callback(tg, chat, cb_id, data):
                     f"✏️ how much SOL for <code>{ca[:8]}..</code>?\n"
                     f"reply with just the amount (e.g. 0.005)\n"
                     f"any other message cancels")
+            return
+        if action == "sellall":
+            threading.Thread(target=sell_all_positions, args=(tg, chat), daemon=True).start()
             return
         if action == "posview":
             positions_view(tg, chat)
