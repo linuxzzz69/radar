@@ -559,6 +559,24 @@ def hardened_buy(mint, symbol, sol_amount, max_daily=0.5):
     log_trade("buy", mint, symbol, sol_amount, sig=sig, err=err)
     return sig, err
 
+def clear_all_limits():
+    """Cancel every limit buy/sell rule across all tokens. TP/SL/trail untouched."""
+    d = load_sltp()
+    cleared = []
+    for mint, rules in list(d.items()):
+        if not any(k in rules for k in ("buy_limit", "sell_limit")):
+            continue
+        for k in ("buy_limit", "buy_limit_sol", "buy_limit_att",
+                  "sell_limit", "sell_limit_pct", "sell_limit_att"):
+            rules.pop(k, None)
+        if not rules:
+            d.pop(mint)
+        cleared.append(mint)
+    if cleared:
+        save_sltp(d)
+    return cleared
+
+
 def trade_volume():
     """(n_buys, sol_bought, n_sells, n_blocked) from the persistent audit log."""
     d = load(HIST_PATH, {"trades": []})

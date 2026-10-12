@@ -622,6 +622,7 @@ def handle_command(tg, chat, text, state):
                 "/limitbuy <CA> <priceUSD> [SOL] - buy when price drops to target\n"
                 "/limitsell <CA> <priceUSD> [pct] - sell when price hits target (gmgn price)\n"
                 "/rules - all active rules (SL/TP/trail/limits) + current prices\n"
+                "/cancelall - cancel ALL limit buys/sells at once\n"
                 "/positions - PnL overview\n"
                 "/smart <CA> - find realized-PnL wallets\n"
                 "/pnl <CA> - position audit (smart money status)\n"
@@ -891,6 +892,9 @@ def handle_command(tg, chat, text, state):
             pos = load_positions()
             lines = []
             rows = []
+            has_limits = any(("buy_limit" in r or "sell_limit" in r) for r in d.values())
+            if has_limits:
+                rows.append([("❌ Cancel ALL limits", "limitcancel:all:x")])
             for mint, rules in d.items():
                 body = []
                 if "sl" in rules: body.append(f"🛑 SL at {rules['sl']}% PnL")
@@ -921,6 +925,17 @@ def handle_command(tg, chat, text, state):
                 tg_send(tg["token"], chat, out)
         except Exception as e:
             tg_send(tg["token"], chat, f"rules error: {e}")
+    elif text.startswith("/cancelall"):
+        from trading_bot import clear_all_limits
+        cleared = clear_all_limits()
+        if cleared:
+            names = ", ".join(f"<code>{m[:8]}..</code>" for m in cleared[:6])
+            more = f" (+{len(cleared) - 6} more)" if len(cleared) > 6 else ""
+            tg_send(tg["token"], chat,
+                    f"❌ <b>cancelled all limit rules</b> — {len(cleared)} token(s)\n"
+                    f"{names}{more}\nTP/SL/trail rules untouched.")
+        else:
+            tg_send(tg["token"], chat, "no active limit rules to cancel")
     elif text.startswith("/balance"):
         try:
             from trading_bot import load_wallet, sol_balance
@@ -1356,7 +1371,13 @@ def handle_callback(tg, chat, cb_id, data):
             positions_view(tg, chat)
             return
         if action == "limitcancel":
-            from trading_bot import clear_rule
+            from trading_bot import clear_rule, clear_all_limits
+            if val == "all":
+                cleared = clear_all_limits()
+                tg_send(tg["token"], chat,
+                        f"❌ <b>all limit rules cancelled</b>" +
+                        (f" ({len(cleared)} tokens)" if cleared else " (nothing to cancel)"))
+                return
             label = {"b": "buy", "s": "sell"}.get(val, "")
             if val in ("b", "all"):
                 clear_rule(ca, "buy_limit", "buy_limit_sol", "buy_limit_att")
