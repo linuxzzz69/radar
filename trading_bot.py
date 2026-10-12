@@ -23,6 +23,12 @@ JUP_QUOTE = "https://lite-api.jup.ag/swap/v1/quote"
 JUP_SWAP = "https://lite-api.jup.ag/swap/v1/swap"
 SOL_MINT = "So11111111111111111111111111111111111111112"
 
+def get_json(url):
+    """HTTP GET -> parsed JSON. (Was previously called-but-undefined here,
+    silently killing every price fetch in this module.)"""
+    return json.load(urllib.request.urlopen(
+        urllib.request.Request(url, headers={"User-Agent": UA["User-Agent"]}), timeout=25))
+
 def wallet_exists():
     return os.path.exists(WALLET_PATH)
 
@@ -79,11 +85,14 @@ def token_amount_ui(pubkey, mint):
         return 0.0, 0
 
 def jup_price_usd(mint):
-    """Jupiter price API fallback (USD via USDC)."""
+    """Jupiter price API fallback (USD). v3 format: {"<mint>": {"usdPrice": ...}}"""
     try:
         d = get_json(f"https://lite-api.jup.ag/price/v3?ids={mint}")
-        p = str((((d.get("data") or {}).get(mint)) or {}).get("price") or "0")
-        return float(p) or 0.0
+        if not isinstance(d, dict):
+            return 0.0
+        info = d.get(mint) or (d.get("data") or {}).get(mint) or {}
+        p = info.get("usdPrice") or info.get("price")
+        return float(p) if p else 0.0
     except Exception:
         return 0.0
 
