@@ -612,6 +612,7 @@ def handle_command(tg, chat, text, state):
                 "/balance - bot wallet SOL balance\n"
                 "/buy CA SOL - custom amount buy (e.g. /buy 8ZLB... 0.005)\n"
                 "/autobuy <SOL|off> - auto-buy this amount on every CA you send\n"
+                "/autosell [mult] [pct] - auto-arm TP on every auto-buy (default 2x, sell 50%)\n"
                 "/status - radar health\n"
                 "/add <addr> <label> <funder|smart> [min_sol]\n"
                 "/remove <addr>\n"
@@ -1010,6 +1011,35 @@ def handle_command(tg, chat, text, state):
                 f"🤖 <b>auto-buy ON</b> — every CA you send now buys <b>{amt} SOL</b> automatically\n"
                 f"(scan + trace still run first; balance gate still applies)\n"
                 f"turn off: /autobuy off")
+    elif text.startswith("/autosell"):
+        parts = text.split()
+        cfg2 = load(CFG_PATH, {}) or {}
+        t = cfg2.setdefault("trading", {})
+        if len(parts) > 1 and parts[1].lower() in ("off", "no", "0"):
+            t["autosell_on"] = False
+            save(CFG_PATH, cfg2)
+            tg_send(tg["token"], chat, "🎯 auto-sell OFF — auto-buys ride without a default exit")
+            return
+        mult = 2.0
+        pct = 50
+        try:
+            if len(parts) > 1:
+                mult = parse_price(parts[1].replace("x", ""))
+            if len(parts) > 2:
+                pct = int(float(parts[2]))
+        except (ValueError, IndexError):
+            pass
+        if mult <= 1 or not (0 < pct <= 100):
+            tg_send(tg["token"], chat, "usage: /autosell [mult] [pct] — e.g. /autosell 2x 50")
+            return
+        t["autosell_on"] = True
+        t["autosell_mult"] = mult
+        t["autosell_pct"] = pct
+        save(CFG_PATH, cfg2)
+        tg_send(tg["token"], chat,
+                f"🎯 <b>auto-sell ON</b> — every auto-buy now auto-arms TP at <b>{mult}x</b> "
+                f"(sell {pct}%" + (", rest rides" if pct < 100 else "") + ")\n"
+                f"checked every 60s once the position has a live price")
     elif text.startswith("/cancelall"):
         from trading_bot import clear_all_limits
         cleared = clear_all_limits()
@@ -1121,7 +1151,17 @@ def handle_command(tg, chat, text, state):
                     preset = float(cfg_t.get("preset_sol", 0.005))
                     tg_send(tg["token"], chat, f"🤖 <b>auto-buying</b> {preset} SOL of <code>{ca[:8]}..</code> ...")
                     # full pipeline: hardened_buy guardrails + journal + entry meta + live card
-                    execute_buy(tg, chat, ca, preset)
+                    ok = execute_buy(tg, chat, ca, preset)
+                    # auto-sell: arm the default TP exit the moment the buy fills
+                    if ok and cfg_t.get("autosell_on"):
+                        mult = float(cfg_t.get("autosell_mult", 2))
+                        spct = int(cfg_t.get("autosell_pct", 50))
+                        from trading_bot import set_rule
+                        set_rule(ca, "tp", (mult - 1) * 100, None if spct >= 100 else spct)
+                        tg_send(tg["token"], chat,
+                                f"🎯 <b>auto-armed</b>: TP at {mult}x — sells {spct}%"
+                                + (", rest rides" if spct < 100 else "")
+                                + " (60s engine watches it)")
                     return
                 if sol < 0.011:
                     holding = 0
