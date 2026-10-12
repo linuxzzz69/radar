@@ -387,6 +387,57 @@ def pnl_audit(tg, chat, ca):
 
 
 
+def wallet_volume_cmd(tg, chat, text):
+    """Total traded volume for a wallet, computed from on-chain tx history."""
+    parts = text.split()
+    try:
+        from trading_bot import load_wallet
+        addr = parts[1] if len(parts) > 1 else load_wallet()[1]
+        tg_send(tg["token"], chat, f"📊 computing volume from chain for <code>{addr[:8]}..</code> (last 30 txs)...")
+        sigs = rpc("getSignaturesForAddress", [addr, {"limit": 30}]) or []
+        SOL = "So11111111111111111111111111111111111111112"
+        buy_sol = sell_sol = nb = ns = 0
+        for s in sigs:
+            if s.get("err"): continue
+            tx = rpc("getTransaction", [s["signature"],
+                                         {"maxSupportedTransactionVersion": 0, "encoding": "jsonParsed"}])
+            meta = (tx or {}).get("meta")
+            if not meta or not (tx.get("transaction") or {}).get("message"): continue
+            keys = tx["transaction"]["message"]["accountKeys"]
+            try:
+                idx = next(i for i, k in enumerate(keys)
+                           if (k if isinstance(k, str) else k.get("pubkey")) == addr)
+            except StopIteration:
+                continue
+            pre = (meta.get("preBalances") or [])[idx] or 0
+            post = (meta.get("postBalances") or [])[idx] or 0
+            sol_d = (post - pre) / 1e9
+            tok_in = tok_out = 0.0
+            pre_t = {(t.get("accountIndex"), t.get("mint")): t for t in (meta.get("preTokenBalances") or [])}
+            for t in (meta.get("postTokenBalances") or []):
+                if t.get("mint") == SOL: continue
+                key = (t.get("accountIndex"), t.get("mint"))
+                before = float(((pre_t.get(key) or {}).get("uiTokenAmount") or {}).get("uiAmount") or 0)
+                after = float((t.get("uiTokenAmount") or {}).get("uiAmount") or 0)
+                d = after - before
+                if d > 0: tok_in += d
+                elif d < 0: tok_out += -d
+            if sol_d < -0.000001 and tok_in > 0:
+                buy_sol += -sol_d; nb += 1
+            elif sol_d > 0.000001 and tok_out > 0:
+                sell_sol += sol_d; ns += 1
+            time.sleep(0.3)
+        total = buy_sol + sell_sol
+        sp = best_price_usd(SOL) or 0
+        tg_send(tg["token"], chat,
+                f"📊 <b>VOLUME</b> — <code>{addr[:8]}..</code> (last {len(sigs)} txs, on-chain)\n"
+                f"buys: {nb} ≈ {buy_sol:.4f} SOL\n"
+                f"sells: {ns} ≈ {sell_sol:.4f} SOL\n"
+                f"total: {nb + ns} swaps ≈ {total:.4f} SOL" + (f" (~${total * sp:.2f})" if sp else ""))
+    except Exception as e:
+        tg_send(tg["token"], chat, f"volume error: {e}")
+
+
 def portfolio_card(tg, chat):
     """One card: positions + volume + watch list + uptime."""
     try:
@@ -618,6 +669,8 @@ def handle_command(tg, chat, text, state):
             tg_send(tg["token"], chat, f"usage: /exit <CA> <pct> ({e})")
     elif text == "/portfolio":
         portfolio_card(tg, chat)
+    elif text.startswith("/volume"):
+        threading.Thread(target=wallet_volume_cmd, args=(tg, chat, text), daemon=True).start()
     elif text.startswith("/positions"):
         try:
             from trading_bot import positions_overview, load_wallet
