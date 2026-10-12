@@ -681,11 +681,11 @@ def handle_command(tg, chat, text, state):
         threading.Thread(target=wallet_volume_cmd, args=(tg, chat, text), daemon=True).start()
     elif text.startswith("/positions"):
         try:
-             from trading_bot import positions_overview, load_wallet, reconcile_positions
-             reconcile_positions()  # chain is truth
-             lines, net = positions_overview()
-             _, pub = load_wallet()
-             if not lines:
+            from trading_bot import positions_overview, load_wallet, reconcile_positions
+            reconcile_positions()  # chain is truth
+            lines, net = positions_overview()
+            _, pub = load_wallet()
+            if not lines:
                 tg_send(tg["token"], chat, f"📍 <code>{pub[:8]}..</code>\nno open positions. Send a CA to buy.")
                 return
             # per-position sell buttons (positions_view carries them)
