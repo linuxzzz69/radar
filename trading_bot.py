@@ -223,10 +223,24 @@ def load_sltp():
 def save_sltp(d):
     with open(SLTP_PATH, "w") as f: json.dump(d, f, indent=1)
 
-def set_rule(mint, kind, pct):
+def set_rule(mint, kind, pct, sell_pct=None):
     d = load_sltp()
     d.setdefault(mint, {})[kind] = pct
+    if kind == "tp":
+        if sell_pct is not None and 0 < sell_pct < 100:
+            d[mint]["tp_sell"] = sell_pct
+        else:
+            d[mint].pop("tp_sell", None)
     save_sltp(d)
+
+def clear_rule(mint, *kinds):
+    d = load_sltp()
+    if mint in d:
+        for k in kinds:
+            d[mint].pop(k, None)
+        if not d[mint]:
+            d.pop(mint)
+        save_sltp(d)
 
 def get_rules(mint):
     return load_sltp().get(mint, {})

@@ -503,7 +503,8 @@ def handle_command(tg, chat, text, state):
                 "/new - fresh launches (<24h)\n"
                 "/mirror <wallet> - recent moves of a tracked wallet\n"
                 "/sl <CA> <pct> - stop-loss (auto-sell at -pct%)\n"
-                "/tp <CA> <pct> - take-profit (auto-sell at +pct%)\n"
+                "/tp <CA> <pct> - take-profit (2x shorthand: /tp <CA> 2x)\n"
+                "/tp <CA> <pct> <sell%> - partial TP: sell % at target, rest rides (e.g. /tp <CA> 2x 50)\n"
                 "/positions - PnL overview\n"
                 "/smart <CA> - find realized-PnL wallets\n"
                 "/pnl <CA> - position audit (smart money status)\n"
@@ -670,20 +671,38 @@ def handle_command(tg, chat, text, state):
         kind = "sl" if text.startswith("/sl") else "tp"
         try:
             parts = text.split()
-            mint, pct = parts[1], float(parts[2])
+            mint = parts[1]
+            pct_s = parts[2]
+            # "2x" syntax: sell level as a multiple of entry
+            if pct_s.lower().endswith("x"):
+                pct = (float(pct_s[:-1]) - 1) * 100
+            else:
+                pct = float(pct_s)
+            sell_pct = None
+            if kind == "tp" and len(parts) > 3:
+                sell_pct = int(float(parts[3]))
+                if not (0 < sell_pct < 100):
+                    sell_pct = None
             from trading_bot import set_rule, load_positions
             d = load_positions()
             if mint not in d:
                 tg_send(tg["token"], chat, "no position in that token. /positions to see open ones")
                 return
-            set_rule(mint, kind, pct)
+            set_rule(mint, kind, pct, sell_pct)
             label = "STOP LOSS" if kind == "sl" else "TAKE PROFIT"
-            tg_send(tg["token"], chat,
-                    f"🎯 {label} set: {mint[:8]}.. at {pct:+.1f}%\n"
-                    f"The bot will auto-sell 100% when PnL crosses it.\n"
-                    f"(checked every 60s)")
+            if kind == "tp" and sell_pct:
+                tg_send(tg["token"], chat,
+                        f"🎯 {label} set: {mint[:8]}.. at {pct:+.1f}% ({parts[2]})\n"
+                        f"Bot will sell {sell_pct}% of the position there —\n"
+                        f"the rest keeps riding. Rule is one-shot.\n"
+                        f"(checked every 60s)")
+            else:
+                tg_send(tg["token"], chat,
+                        f"🎯 {label} set: {mint[:8]}.. at {pct:+.1f}%\n"
+                        f"The bot will auto-sell 100% when PnL crosses it.\n"
+                        f"(checked every 60s)")
         except Exception as e:
-            tg_send(tg["token"], chat, f"usage: /sl <CA> -30  or  /tp <CA> 100 ({e})")
+            tg_send(tg["token"], chat, f"usage: /sl <CA> -30  or  /tp <CA> 100  or  /tp <CA> 2x 50 ({e})")
     elif text.startswith("/balance"):
         try:
             from trading_bot import load_wallet, sol_balance
@@ -1035,10 +1054,17 @@ def pnl_poll_loop(tg, chat):
                 rules = get_rules(mint)
                 do_sell_now = False
                 reason = ""
+                sell_pct = 100
+                tp_partial = False
                 if "sl" in rules and pnl_pct <= float(rules["sl"]):
                     do_sell_now, reason = True, f"STOP LOSS {pnl_pct:.1f}% <= {rules['sl']}%"
                 if "tp" in rules and pnl_pct >= float(rules["tp"]):
                     do_sell_now, reason = True, f"TAKE PROFIT {pnl_pct:.1f}% >= {rules['tp']}%"
+                    try:
+                        sell_pct = int(float(rules.get("tp_sell", 100)))
+                    except Exception:
+                        sell_pct = 100
+                    tp_partial = 0 < sell_pct < 100
                 # trailing stop: once in profit, trail the peak. Track peak in state.
                 if "trail" in rules and pnl_pct > 0:
                     st_pnl = load(STATE_PATH, {})
@@ -1046,6 +1072,7 @@ def pnl_poll_loop(tg, chat):
                     pk = max(peak.get("peak", 0), pnl_pct)
                     if pnl_pct <= pk - float(rules["trail"]):
                         do_sell_now, reason = True, f"TRAILING STOP: peaked {pk:.1f}%, fell to {pnl_pct:.1f}% (trail {rules['trail']}%)"
+                        sell_pct, tp_partial = 100, False
                         st_pnl.setdefault("trails", {}).pop(mint, None)
                         save(STATE_PATH, st_pnl)
                     else:
@@ -1056,15 +1083,22 @@ def pnl_poll_loop(tg, chat):
                 if do_sell_now:
                     kp, pub = load_wallet()
                     from trading_bot import do_sell as _ds
-                    sig, err = _ds(mint, 100)
+                    sig, err = _ds(mint, sell_pct)
                     if err:
                         tg_send(tg["token"], chat, f"⚠️ {reason} — sell failed: {err}")
                     else:
-                        from trading_bot import record_sell
-                        record_sell(mint, 100)
-                        tg_send(tg["token"], chat,
-                                f"🎯 <b>{reason} — AUTO-SOLD 100%</b>\n"
-                                f"tx: https://solscan.io/tx/{sig}")
+                        from trading_bot import record_sell, clear_rule
+                        record_sell(mint, sell_pct)
+                        if tp_partial:
+                            clear_rule(mint, "tp", "tp_sell")
+                            tg_send(tg["token"], chat,
+                                    f"🎯 <b>{reason} — SOLD {sell_pct}%</b> | rest still riding 🚀\n"
+                                    f"tx: https://solscan.io/tx/{sig}\n"
+                                    f"TP rule consumed. Set /tp /sl /trail on the rest if you want.")
+                        else:
+                            tg_send(tg["token"], chat,
+                                    f"🎯 <b>{reason} — AUTO-SOLD 100%</b>\n"
+                                    f"tx: https://solscan.io/tx/{sig}")
         except Exception as e:
             print("pnl_poll error:", e)
 
