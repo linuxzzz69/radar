@@ -129,8 +129,10 @@ def sol_price_usd():
         pass
     return jup_price_usd("So11111111111111111111111111111111111111112")
 
-def jup_quote(in_mint, out_mint, amount_raw, direct_only=False):
-    url = f"{JUP_QUOTE}?inputMint={in_mint}&outputMint={out_mint}&amount={amount_raw}&slippageBps=150"
+SLIP_LADDER = [150, 500, 1000]  # bps: 1.5% -> 5% -> 10% (fresh launches move fast)
+
+def jup_quote(in_mint, out_mint, amount_raw, direct_only=False, slippage_bps=150):
+    url = f"{JUP_QUOTE}?inputMint={in_mint}&outputMint={out_mint}&amount={amount_raw}&slippageBps={slippage_bps}"
     if direct_only:
         url += "&onlyDirectRoutes=true"
     try:
@@ -138,9 +140,9 @@ def jup_quote(in_mint, out_mint, amount_raw, direct_only=False):
     except Exception:
         return None
 
-def jup_swap_tx(keypair, in_mint, out_mint, amount_raw, direct_only=False):
+def jup_swap_tx(keypair, in_mint, out_mint, amount_raw, direct_only=False, slippage_bps=150):
     """Build a Jupiter swap tx and return it UNSIGNED-ready (bot signs)."""
-    q = jup_quote(in_mint, out_mint, amount_raw, direct_only=direct_only)
+    q = jup_quote(in_mint, out_mint, amount_raw, direct_only=direct_only, slippage_bps=slippage_bps)
     if not q: return None, "no route found"
     body = json.dumps({
         "quoteResponse": q,
@@ -183,28 +185,42 @@ def sign_and_send(keypair, swap_b64):
             last = str(e); continue
     return None, str(last)
 
-def jup_swap_with_retry(keypair, in_mint, out_mint, amount_raw, retries=4):
-    """Full swap with Jupiter API retry (lite-api flaps 502/503)
-    and direct-route fallback when the multi-hop tx exceeds the 1232B packet limit."""
+def jup_swap_with_retry(keypair, in_mint, out_mint, amount_raw, retries=5):
+    """Full swap with Jupiter API retry (lite-api flaps), direct-route fallback
+    for oversized txs, and slippage escalation (1.5% -> 5% -> 10%) for fast movers."""
     last = None
     direct = False
+    slip_idx = 0
     for i in range(retries):
-        b64, err = jup_swap_tx(keypair, in_mint, out_mint, amount_raw, direct_only=direct)
+        slip = SLIP_LADDER[min(slip_idx, len(SLIP_LADDER) - 1)]
+        b64, err = jup_swap_tx(keypair, in_mint, out_mint, amount_raw,
+                               direct_only=direct, slippage_bps=slip)
         if b64:
             sig, serr = sign_and_send(keypair, b64)
             if sig:
                 return sig, None
             last = serr
-            if serr and "too large" in str(serr).lower():
+            s = str(serr)
+            if "too large" in s.lower() and not direct:
                 direct = True
+                continue
+            if ("custom program error" in s or "slippage" in s.lower()
+                    and slip_idx < len(SLIP_LADDER) - 1):
+                slip_idx += 1
                 continue
             return sig, serr
         last = err
-        if err and "too large" in str(err).lower() and not direct:
+        s = str(err)
+        if "too large" in s.lower() and not direct:
             direct = True
             continue
-        if err and ("502" in str(err) or "503" in str(err) or "unavailable" in str(err).lower()):
-            time.sleep(3 * (i + 1)); continue
+        if ("custom program error" in s or "slippage" in s.lower()
+                and slip_idx < len(SLIP_LADDER) - 1):
+            slip_idx += 1
+            continue
+        if "502" in s or "503" in s or "unavailable" in s.lower():
+            time.sleep(3 * (i + 1))
+            continue
         break
     return None, last
 
