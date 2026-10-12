@@ -849,11 +849,11 @@ def handle_command(tg, chat, text, state):
                     if holding > 0:
                         rows.insert(1, [("🔴 Sell 25%", f"sell:25:{ca}"), ("🔴 Sell 50%", f"sell:50:{ca}"), ("🔴 Sell 100%", f"sell:100:{ca}")])
                     tg_buttons(tg["token"], chat,
-                            f"⚡ <b>TRADE PANEL</b> — <code>{pub[:8]}..</code>\n💰 {sol:.4f} SOL — presets need 0.06+, or buy any amount via Custom.",
+                            f"⚡ <b>TRADE PANEL</b> — <code>{pub[:8]}..</code>\n{position_line(ca)}💰 {sol:.4f} SOL — presets need 0.06+, or buy any amount via Custom.",
                             rows)
                     return
                 tg_buttons(tg["token"], chat,
-                        f"⚡ <b>TRADE PANEL</b> — <code>{pub[:8]}..</code> ({sol:.3f} SOL)\nTap a button — the bot signs and executes instantly.",
+                        f"⚡ <b>TRADE PANEL</b> — <code>{pub[:8]}..</code> ({sol:.3f} SOL)\n{position_line(ca)}Tap a button — the bot signs and executes instantly.",
                         [[("🟢 Buy 0.05", f"buy:0.05:{ca}"), ("🟢 Buy 0.1", f"buy:0.1:{ca}"), ("🟢 Buy 0.25", f"buy:0.25:{ca}"), ("✏️ Custom", f"buy:custom:{ca}")],
                          [("🔴 Sell 25%", f"sell:25:{ca}"), ("🔴 Sell 50%", f"sell:50:{ca}"), ("🔴 Sell 100%", f"sell:100:{ca}"), ("💼 Positions", "posview:x:x")],
                          [("🎯 TP 2x 50%", f"tpset:100:50:{ca}"), ("🎯 TP 2x 100%", f"tpset:100:100:{ca}"), ("🛑 SL -30%", f"slset:-30:x:{ca}")]])
@@ -911,11 +911,11 @@ def trade_panel_msg(ca):
             if holding > 0:
                 rows.insert(1, [("🔴 Sell 25%", f"sell:25:{ca}"), ("🔴 Sell 50%", f"sell:50:{ca}"), ("🔴 Sell 100%", f"sell:100:{ca}")])
             tg_buttons(tg["token"], chat,
-                    f"⚡ <b>TRADE PANEL</b> — <code>{pub[:8]}..</code>\n💰 {sol:.4f} SOL — presets need 0.06+, or buy any amount via Custom.",
+                    f"⚡ <b>TRADE PANEL</b> — <code>{pub[:8]}..</code>\n{position_line(ca)}💰 {sol:.4f} SOL — presets need 0.06+, or buy any amount via Custom.",
                     rows)
             return
         tg_buttons(tg["token"], chat,
-                f"⚡ <b>TRADE PANEL</b> — <code>{pub[:8]}..</code> ({sol:.3f} SOL)\nTap a button — the bot signs and executes instantly.",
+                f"⚡ <b>TRADE PANEL</b> — <code>{pub[:8]}..</code> ({sol:.3f} SOL)\n{position_line(ca)}Tap a button — the bot signs and executes instantly.",
                 [[("🟢 Buy 0.05", f"buy:0.05:{ca}"), ("🟢 Buy 0.1", f"buy:0.1:{ca}"), ("🟢 Buy 0.25", f"buy:0.25:{ca}"), ("✏️ Custom", f"buy:custom:{ca}")],
                  [("🔴 Sell 25%", f"sell:25:{ca}"), ("🔴 Sell 50%", f"sell:50:{ca}"), ("🔴 Sell 100%", f"sell:100:{ca}"), ("💼 Positions", "posview:x:x")],
                  [("🎯 TP 2x 50%", f"tpset:100:50:{ca}"), ("🎯 TP 2x 100%", f"tpset:100:100:{ca}"), ("🛑 SL -30%", f"slset:-30:x:{ca}")]])
@@ -952,6 +952,24 @@ def save_offset(new_offset):
     st = load(STATE_PATH, {})
     st["tg_offset"] = new_offset
     save(STATE_PATH, st)
+
+def position_line(ca):
+    """"Your position" line with live PnL, if the bot wallet holds this token."""
+    try:
+        from trading_bot import load_positions, position_pnl
+        if load_positions().get(ca, {}).get("tokens", 0) <= 0:
+            return ""
+        r = position_pnl(ca)
+        if not r:
+            return ""
+        sym, val_sol, pnl_sol, pnl_pct, tokens = r
+        usd = tokens * (best_price_usd(ca) or 0)
+        emoji = "🟢" if pnl_pct >= 0 else "🔴"
+        return (f"{emoji} <b>YOUR POSITION</b>: {tokens:,.4f} {esc(sym)}\n"
+                f"PnL {pnl_pct:+.1f}% ({pnl_sol:+.4f} SOL) | ${usd:.2f}\n")
+    except Exception:
+        return ""
+
 
 def execute_buy(tg, chat, ca, amt):
     """Shared buy path: panel buttons, /buy command, auto-buy."""
