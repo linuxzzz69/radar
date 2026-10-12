@@ -131,6 +131,17 @@ def sol_price_usd():
 
 SLIP_LADDER = [150, 500, 1000]  # bps: 1.5% -> 5% -> 10% (fresh launches move fast)
 
+def trade_cfg():
+    """Live-reload trading settings from watch_config.json 'trading' block.
+    priority: low|medium|high  |  max_priority_lamports: cap for the priority fee."""
+    d = load(os.path.join(BASE, "watch_config.json"), {}) or {}
+    t = d.get("trading") or {}
+    return {
+        "priority": t.get("priority", "medium"),
+        "max_priority_lamports": int(t.get("max_priority_lamports", 300000)),
+    }
+
+
 def jup_quote(in_mint, out_mint, amount_raw, direct_only=False, slippage_bps=150):
     url = f"{JUP_QUOTE}?inputMint={in_mint}&outputMint={out_mint}&amount={amount_raw}&slippageBps={slippage_bps}"
     if direct_only:
@@ -144,12 +155,15 @@ def jup_swap_tx(keypair, in_mint, out_mint, amount_raw, direct_only=False, slipp
     """Build a Jupiter swap tx and return it UNSIGNED-ready (bot signs)."""
     q = jup_quote(in_mint, out_mint, amount_raw, direct_only=direct_only, slippage_bps=slippage_bps)
     if not q: return None, "no route found"
+    tc = trade_cfg()
     body = json.dumps({
         "quoteResponse": q,
         "userPublicKey": str(keypair.pubkey()),
         "wrapAndUnwrapSol": True,
         "dynamicComputeUnitLimit": True,
-        "prioritizationFeeLamports": {"priorityLevelWithMaxLamports": {"maxLamports": 2000000, "priorityLevel": "high"}}
+        "prioritizationFeeLamports": {"priorityLevelWithMaxLamports": {
+            "maxLamports": tc["max_priority_lamports"],
+            "priorityLevel": tc["priority"]}}
     }).encode()
     req = urllib.request.Request(JUP_SWAP, data=body, headers=UA)
     try:

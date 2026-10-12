@@ -699,10 +699,12 @@ def handle_command(tg, chat, text, state):
         t = cfg2.get("trading", {})
         tg_send(tg["token"], chat,
                 f"⚙️ <b>Trading settings</b>\n"
+                f"route: Jupiter lite-api (0 platform fee)\n"
                 f"auto-buy on CA: {'ON' if t.get('autobuy') else 'OFF'}\n"
                 f"buy preset: {t.get('preset_sol', 0.05)} SOL\n"
-                f"slippage: {t.get('slippage_bps', 1500)/100:.1f}%\n"
-                f"(edit watch_config.json 'trading' block + restart to change)")
+                f"slippage ladder: 1.5% → 5% → 10%\n"
+                f"priority fee: {t.get('priority', 'medium')} (cap {t.get('max_priority_lamports', 300000)} lamports)\n"
+                f"(edit watch_config.json 'trading' block on the VPS — picked up live, no restart)")
     elif text.startswith("/pnl "):
         try:
             ca2 = text.split()[1]
