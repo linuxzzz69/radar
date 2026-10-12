@@ -556,6 +556,7 @@ def handle_command(tg, chat, text, state):
                 "/tp <CA> <pct> <sell%> - partial TP: sell % at target, rest rides (e.g. /tp <CA> 2x 50)\n"
                 "/limitbuy <CA> <priceUSD> [SOL] - buy when price drops to target\n"
                 "/limitsell <CA> <priceUSD> [pct] - sell when price hits target (gmgn price)\n"
+                "/rules - all active rules (SL/TP/trail/limits) + current prices\n"
                 "/positions - PnL overview\n"
                 "/smart <CA> - find realized-PnL wallets\n"
                 "/pnl <CA> - position audit (smart money status)\n"
@@ -792,7 +793,10 @@ def handle_command(tg, chat, text, state):
             pct = int(float(parts[3])) if len(parts) > 3 else 100
             from trading_bot import set_rule, load_positions
             if mint not in load_positions():
-                tg_send(tg["token"], chat, "no position in that token — /tp works off entry price instead")
+                tg_send(tg["token"], chat,
+                        "no position in that token — the BOT WALLET holds none.\n"
+                        "If you bought with your MAIN wallet on gmgn, the bot can't sell it.\n"
+                        "/rules shows everything the bot is tracking.")
                 return
             cur = best_price_usd(mint) or 0
             set_rule(mint, "sell_limit", tgt)
@@ -806,6 +810,35 @@ def handle_command(tg, chat, text, state):
             tg_send(tg["token"], chat,
                     "usage: /limitsell <CA> <price> [pct]\n"
                     "price accepts gmgn notation: 0.0₅134 = 0.00000134")
+    elif text == "/rules" or text in ("/tp", "/sl", "/trail"):
+        try:
+            from trading_bot import load_sltp, load_positions
+            d = load_sltp() or {}
+            if not d:
+                tg_send(tg["token"], chat, "📋 no active rules.\nset: /sl /tp /trail /limitbuy /limitsell")
+                return
+            pos = load_positions()
+            lines = []
+            for mint, rules in d.items():
+                body = []
+                if "sl" in rules: body.append(f"🛑 SL at {rules['sl']}% PnL")
+                if "tp" in rules:
+                    tp_s = f"🎯 TP at +{rules['tp']}% PnL"
+                    if "tp_sell" in rules: tp_s += f" — sells {rules['tp_sell']}%, rest rides"
+                    body.append(tp_s)
+                if "trail" in rules: body.append(f"📉 trail {rules['trail']}% off peak")
+                if "buy_limit" in rules:
+                    body.append(f"⚖ limit buy {rules.get('buy_limit_sol', '?')} SOL at <= ${float(rules['buy_limit']):.10g}")
+                if "sell_limit" in rules:
+                    body.append(f"⚖ limit sell {rules.get('sell_limit_pct', 100)}% at >= ${float(rules['sell_limit']):.10g}")
+                if not body: continue
+                cur = best_price_usd(mint) or 0
+                if cur: body.append(f"now: ${cur:.10g}")
+                tag = "📊 holding" if mint in pos else "(no position)"
+                lines.append(f"<code>{mint[:8]}..</code> {tag}\n  " + "\n  ".join(body))
+            tg_send(tg["token"], chat, "📋 <b>Active rules</b>\n\n" + ("\n\n".join(lines) or "(empty)"))
+        except Exception as e:
+            tg_send(tg["token"], chat, f"rules error: {e}")
     elif text.startswith("/balance"):
         try:
             from trading_bot import load_wallet, sol_balance
