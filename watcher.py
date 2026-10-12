@@ -1372,7 +1372,7 @@ def pnl_poll_loop(tg, chat):
                             execute_buy(tg, chat, mint, amt)
                         except Exception as ex:
                             tg_send(tg["token"], chat, f"limit buy error: {ex}")
-                elif "sell_limit" in rules:
+                if "sell_limit" in rules:
                     tgt = float(rules["sell_limit"])
                     pct = int(float(rules.get("sell_limit_pct", 100)))
                     if cur >= tgt:
