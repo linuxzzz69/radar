@@ -1031,7 +1031,7 @@ def positions_view(tg, chat):
         d = load_positions()
         lines, rows = [], []
         for mint, p in list(d.items()):
-            if p.get("tokens", 0) <= 0: continue
+            # position_pnl resolves post-buy 0-token records from the chain
             r = position_pnl(mint)
             if not r: continue
             sym, val_sol, pnl_sol, pnl_pct, tokens = r
@@ -1183,7 +1183,7 @@ def pnl_poll_loop(tg, chat):
             from trading_bot import load_positions, position_pnl, load_card, get_rules, load_wallet, do_sell, sol_balance
             d = load_positions()
             for mint, p in list(d.items()):
-                if p["tokens"] <= 0: continue
+                # position_pnl resolves post-buy 0-token records from the chain
                 r = position_pnl(mint)
                 if not r: continue
                 sym, val_sol, pnl_sol, pnl_pct, tokens = r

@@ -211,7 +211,18 @@ def positions_overview():
     lines = []
     net_sol = sol_balance(pub)
     sp = sol_price_usd()
-    for mint, p in d.items():
+    for mint, p in list(d.items()):
+        if p.get("tokens", 0) <= 0:
+            # post-buy unresolved record: try resolving from the live chain
+            try:
+                ui, _dec = token_amount_ui(pub, mint)
+                if ui > 0:
+                    p["tokens"] = ui
+                    save_positions(d)
+                else:
+                    continue
+            except Exception:
+                continue
         if p["tokens"] <= 0: continue
         # live price via DexScreener
         try:
