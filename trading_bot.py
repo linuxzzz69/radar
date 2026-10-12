@@ -185,6 +185,30 @@ def sign_and_send(keypair, swap_b64):
             last = str(e); continue
     return None, str(last)
 
+def confirm_tx(sig, timeout=45):
+    """Poll getSignatureStatuses until the tx lands.
+    Returns (True, None) confirmed ok | (False, err) failed on-chain |
+    (None, 'unconfirmed') not seen before timeout (do NOT retry those)."""
+    deadline = time.time() + timeout
+    while time.time() < deadline:
+        for url in (RPC, "https://solana-rpc.publicnode.com"):
+            try:
+                body = json.dumps({"jsonrpc": "2.0", "id": 1, "method": "getSignatureStatuses",
+                                   "params": [[sig], {"searchTransactionHistory": True}]}).encode()
+                r = json.load(urllib.request.urlopen(urllib.request.Request(url, data=body, headers=UA), timeout=20))
+                val = (((r.get("result") or {}).get("value") or [None]) or [None])[0]
+                if val is None:
+                    break
+                if val.get("err"):
+                    return False, str(val.get("err"))
+                if val.get("confirmationStatus"):
+                    return True, None
+            except Exception:
+                continue
+        time.sleep(3)
+    return None, "unconfirmed"
+
+
 def jup_swap_with_retry(keypair, in_mint, out_mint, amount_raw, retries=5):
     """Full swap with Jupiter API retry (lite-api flaps), direct-route fallback
     for oversized txs, and slippage escalation (1.5% -> 5% -> 10%) for fast movers."""
@@ -198,7 +222,20 @@ def jup_swap_with_retry(keypair, in_mint, out_mint, amount_raw, retries=5):
         if b64:
             sig, serr = sign_and_send(keypair, b64)
             if sig:
-                return sig, None
+                ok, cerr = confirm_tx(sig)
+                if ok is True:
+                    return sig, None
+                if ok is False:
+                    # tx landed and FAILED on-chain (funds did NOT move) — safe to retry
+                    last = f"tx failed on-chain: {cerr}"
+                    s = cerr.lower()
+                    if ("custom" in s or "slippage" in s or "error" in s) and slip_idx < len(SLIP_LADDER) - 1:
+                        slip_idx += 1
+                        continue
+                    return None, last
+                # timeout: tx may still land — never retry (double-buy risk)
+                return sig, (f"submitted but not confirmed yet — check "
+                             f"https://solscan.io/tx/{sig} and /balance before retrying")
             last = serr
             s = str(serr)
             if "too large" in s.lower() and not direct:
