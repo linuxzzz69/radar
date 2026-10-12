@@ -449,6 +449,7 @@ def portfolio_card(tg, chat):
         sol = sol_balance(pub)
         d = load_positions()
         lines=[]
+        rows = []
         net = sol
         for mint,p in d.items():
             if p["tokens"]<=0: continue
@@ -456,13 +457,16 @@ def portfolio_card(tg, chat):
             if not r: continue
             sym,val,pnl_sol,pnl_pct,_=r
             net+=val
-            lines.append(f"{'🟢' if pnl_pct>=0 else '🔴'} {sym}: {pnl_pct:+.1f}% ({pnl_sol:+.4f} SOL)")
+            lines.append(f"{'🟢' if pnl_pct>=0 else '🔴'} {esc(sym)}: {pnl_pct:+.1f}% ({pnl_sol:+.4f} SOL)")
+            s = (sym or "?")[:10]
+            rows.append([(f"🔴 {s} 25%", f"sell:25:{mint}"),
+                         (f"🔴 {s} 50%", f"sell:50:{mint}"),
+                         (f"🔴 {s} 100%", f"sell:100:{mint}")])
         n_buys, sol_bought, n_sells, n_blocked = trade_volume()
         wl=cfg2.get("watch",[])
         up=(time.time()-START_TS)/3600
         body="\n".join(lines) if lines else "(no open positions)"
-        tg_send(tg["token"], chat,
-                f"📒 <b>PORTFOLIO</b>\n"
+        card = (f"📒 <b>PORTFOLIO</b>\n"
                 f"💰 wallet: {sol:.3f} SOL\n"
                 f"📈 positions:\n{body}\n"
                 f"➖ net worth: {net:.3f} SOL\n\n"
@@ -471,6 +475,10 @@ def portfolio_card(tg, chat):
                 f"sells: {n_sells} | blocked: {n_blocked}\n\n"
                 f"👁 watching {len(wl)} wallets\n"
                 f"⏱ uptime {up:.1f}h")
+        if rows:
+            tg_buttons(tg["token"], chat, card, rows)
+        else:
+            tg_send(tg["token"], chat, card)
     except Exception as e:
         tg_send(tg["token"], chat, f"portfolio error: {e}")
 
@@ -673,16 +681,16 @@ def handle_command(tg, chat, text, state):
         threading.Thread(target=wallet_volume_cmd, args=(tg, chat, text), daemon=True).start()
     elif text.startswith("/positions"):
         try:
-            from trading_bot import positions_overview, load_wallet
-            lines, net = positions_overview()
-            _, pub = load_wallet()
-            if not lines:
+             from trading_bot import positions_overview, load_wallet, reconcile_positions
+             reconcile_positions()  # chain is truth
+             lines, net = positions_overview()
+             _, pub = load_wallet()
+             if not lines:
                 tg_send(tg["token"], chat, f"📍 <code>{pub[:8]}..</code>\nno open positions. Send a CA to buy.")
                 return
-            import base58 as b58
-            from trading_bot import token_balance
-            body = "\n".join(lines)
-            tg_send(tg["token"], chat, f"📊 <b>Positions Overview</b>\n\n{body}\n\nNet: {net:.4f} SOL")
+            # per-position sell buttons (positions_view carries them)
+            positions_view(tg, chat)
+            tg_send(tg["token"], chat, f"📊 net across positions: {net:.4f} SOL")
         except Exception as e:
             tg_send(tg["token"], chat, f"positions error: {e}")
     elif text.startswith("/settings"):
@@ -1265,9 +1273,11 @@ def execute_buy(tg, chat, ca, amt):
 
 
 def positions_view(tg, chat):
-    """All open positions, each with its own partial-sell buttons."""
+    """All open positions with PnL detail + per-position sell buttons."""
     try:
         from trading_bot import load_positions, position_pnl
+        reconcile = __import__("trading_bot").reconcile_positions
+        reconcile()
         d = load_positions()
         lines, rows = [], []
         for mint, p in list(d.items()):
@@ -1275,7 +1285,10 @@ def positions_view(tg, chat):
             r = position_pnl(mint)
             if not r: continue
             sym, val_sol, pnl_sol, pnl_pct, tokens = r
-            lines.append(f"• <b>{esc(sym)}</b> {pnl_pct:+.1f}% ({pnl_sol:+.4f} SOL) — ${tokens * (best_price_usd(mint) or 0):.2f}")
+            entry = d.get(mint, {}).get("sol_in", 0) or 0
+            usd = tokens * (best_price_usd(mint) or 0)
+            lines.append(f"• <b>{esc(sym)}</b> {pnl_pct:+.1f}% ({pnl_sol:+.4f} SOL) — ${usd:.2f}"
+                         + (f" | entry {entry:.4f} SOL" if entry else " | entry unknown"))
             s = sym[:10]
             rows.append([(f"🔴 {s} 25%", f"sell:25:{mint}"),
                          (f"🔴 {s} 50%", f"sell:50:{mint}"),

@@ -344,7 +344,16 @@ def reconcile_positions():
         for mint, ui in mints.items():
             p = d.get(mint)
             if not p or p.get("tokens", 0) <= 0:
-                d[mint] = {"symbol": (p or {}).get("symbol", "?"),
+                sym = (p or {}).get("symbol") or "?"
+                if sym == "?":
+                    try:
+                        dd = get_json(f"https://api.dexscreener.com/latest/dex/tokens/{mint}")
+                        ps = dd.get("pairs") or []
+                        best = max(ps, key=lambda x: (x.get("liquidity") or {}).get("usd", 0)) if ps else None
+                        sym = ((best.get("baseToken") or {}).get("symbol") or "?") if best else "?"
+                    except Exception:
+                        sym = "?"
+                d[mint] = {"symbol": sym,
                            "sol_in": (p or {}).get("sol_in", 0.0),
                            "tokens": ui}
                 added.append(mint)
