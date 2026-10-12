@@ -619,14 +619,38 @@ def clear_all_limits():
     return cleared
 
 
+def token_supply(mint):
+    """UI supply via RPC (for mcap computation when screener data is missing)."""
+    for url in (RPC, "https://solana-rpc.publicnode.com"):
+        try:
+            body = json.dumps({"jsonrpc": "2.0", "id": 1, "method": "getTokenSupply",
+                               "params": [mint]}).encode()
+            r = json.load(urllib.request.urlopen(urllib.request.Request(url, data=body, headers=UA), timeout=20))
+            return float((((r.get("result") or {}).get("value")) or {}).get("uiAmount") or 0)
+        except Exception:
+            continue
+    return 0.0
+
+
 def mcap_usd(mint):
-    """Live market cap from DexScreener's best-pair data (what gmgn shows)."""
+    """Market cap, three layers: DexScreener marketCap -> FDV field -> price x supply."""
     try:
         dd = get_json(f"https://api.dexscreener.com/latest/dex/tokens/{mint}")
         ps = dd.get("pairs") or []
-        best = max(ps, key=lambda x: (x.get("liquidity") or {}).get("usd", 0)) if ps else None
-        if best and best.get("marketCap"):
-            return float(best["marketCap"])
+        best = max(ps, key=lambda x: (x.get("liquidity") or {}).get("usd") or 0) if ps else None
+        if best:
+            mc = best.get("marketCap") or best.get("fdv")
+            if mc:
+                return float(mc)
+    except Exception:
+        pass
+    # screener dead/unindexed: price (itself dexscreener->jupiter) x on-chain supply
+    try:
+        p = token_price_usd(mint)
+        if p:
+            sup = token_supply(mint)
+            if sup:
+                return p * sup
     except Exception:
         pass
     return 0.0
