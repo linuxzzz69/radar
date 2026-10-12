@@ -25,7 +25,7 @@ jobs:
             cd /opt/radar
             # state files must exist before bind-mounting (docker creates DIRECTORIES otherwise)
             for f in .bot_positions.json .bot_sltp.json .bot_cards.json .trade_history.json .denylist.json; do
-              [ -d "$f" ] && rm -rf "$f"
+              if [ -d "$f" ]; then rm -rf "$f"; fi
               [ -f "$f" ] || echo '{}' > "$f"
             done
             git fetch origin
