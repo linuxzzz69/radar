@@ -1119,22 +1119,9 @@ def handle_command(tg, chat, text, state):
                 sol = sol_balance(pub)
                 if cfg_t.get("autobuy") and sol >= float(cfg_t.get("preset_sol", 0.005)) + 0.005:
                     preset = float(cfg_t.get("preset_sol", 0.005))
-                    tg_send(tg["token"], chat, f"⏳ auto-buying {preset} SOL of <code>{ca[:8]}..</code> ...")
-                    from trading_bot import do_buy, record_buy
-                    sig, err = do_buy(ca, preset)
-                    if err:
-                        tg_send(tg["token"], chat, f"❌ auto-buy failed: {err}")
-                    else:
-                        try:
-                            dd = get_json(f"https://api.dexscreener.com/latest/dex/tokens/{ca}")
-                            best = max(dd.get("pairs") or [], key=lambda x:(x.get('liquidity') or {}).get('usd',0))
-                            sym = (best.get('baseToken') or {}).get('symbol','?')
-                        except Exception:
-                            sym = '?'
-                        record_buy(ca, sym, preset, 0)
-                        tg_send(tg["token"], chat,
-                                f"✅ <b>AUTO-BOUGHT</b> {preset} SOL of {sym}\n"
-                                f"tx: https://solscan.io/tx/{sig}\n/positions for PnL")
+                    tg_send(tg["token"], chat, f"🤖 <b>auto-buying</b> {preset} SOL of <code>{ca[:8]}..</code> ...")
+                    # full pipeline: hardened_buy guardrails + journal + entry meta + live card
+                    execute_buy(tg, chat, ca, preset)
                     return
                 if sol < 0.011:
                     holding = 0
@@ -1347,6 +1334,13 @@ def execute_buy(tg, chat, ca, amt):
         ps = dd.get("pairs") or []
         best = max(ps, key=lambda x:(x.get('liquidity') or {}).get('usd',0)) if ps else None
         sym = (best.get('baseToken') or {}).get('symbol','?') if best else '?'
+        if sym == '?':
+            try:
+                ji = get_json(f"https://lite-api.jup.ag/tokens/v2/{ca}")
+                sym = ((ji or {}).get("symbol") if isinstance(ji, dict) else
+                       (ji[0].get("symbol") if ji and isinstance(ji, list) else '?')) or '?'
+            except Exception:
+                sym = '?'
         e_mcap = float(best.get("marketCap") or 0) if best else 0
         if not e_mcap:
             try:
