@@ -773,11 +773,13 @@ def handle_command(tg, chat, text, state):
             from trading_bot import set_rule
             set_rule(mint, "buy_limit", tgt)
             set_rule(mint, "buy_limit_sol", amt)
-            tg_send(tg["token"], chat,
+            dist = f" ({(tgt - cur) / cur * 100:+.1f}% vs current)" if cur else ""
+            tg_buttons(tg["token"], chat,
                     f"🎯 <b>LIMIT BUY</b> set: <code>{mint[:8]}..</code>\n"
-                    f"triggers when price <= ${tgt:.10g}\n"
-                    f"{'current: $' + format(cur, '.10g') if cur else '(no price yet — rule waits for data)'}\n"
-                    f"buys {amt} SOL | one-shot | checked every 60s")
+                    f"{token_brief(mint)}"
+                    f"triggers when price <= ${tgt:.10g}{dist}\n"
+                    f"buys {amt} SOL | one-shot | checked every 60s",
+                    [[("❌ Cancel", f"limitcancel:b:{mint}"), ("🔄 Token", f"rescan:{mint}")]])
         except (ValueError, IndexError):
             tg_send(tg["token"], chat,
                     "usage: /limitbuy <CA> <price> [SOL]\n"
@@ -801,11 +803,13 @@ def handle_command(tg, chat, text, state):
             cur = best_price_usd(mint) or 0
             set_rule(mint, "sell_limit", tgt)
             set_rule(mint, "sell_limit_pct", pct)
-            tg_send(tg["token"], chat,
+            dist = f" ({(tgt - cur) / cur * 100:+.1f}% vs current)" if cur else ""
+            tg_buttons(tg["token"], chat,
                     f"🎯 <b>LIMIT SELL</b> set: <code>{mint[:8]}..</code>\n"
-                    f"triggers when price >= ${tgt:.10g}\n"
-                    f"{'current: $' + format(cur, '.10g') if cur else '(no price yet)'}\n"
-                    f"sells {pct}% | one-shot | checked every 60s")
+                    f"{token_brief(mint)}"
+                    f"triggers when price >= ${tgt:.10g}{dist}\n"
+                    f"sells {pct}% | one-shot | checked every 60s",
+                    [[("❌ Cancel", f"limitcancel:s:{mint}"), ("🔄 Token", f"rescan:{mint}")]])
         except (ValueError, IndexError):
             tg_send(tg["token"], chat,
                     "usage: /limitsell <CA> <price> [pct]\n"
@@ -819,6 +823,7 @@ def handle_command(tg, chat, text, state):
                 return
             pos = load_positions()
             lines = []
+            rows = []
             for mint, rules in d.items():
                 body = []
                 if "sl" in rules: body.append(f"🛑 SL at {rules['sl']}% PnL")
@@ -829,14 +834,24 @@ def handle_command(tg, chat, text, state):
                 if "trail" in rules: body.append(f"📉 trail {rules['trail']}% off peak")
                 if "buy_limit" in rules:
                     body.append(f"⚖ limit buy {rules.get('buy_limit_sol', '?')} SOL at <= ${float(rules['buy_limit']):.10g}")
+                    rows.append([(f"❌ cancel buy-limit {mint[:6]}", f"limitcancel:b:{mint}")])
                 if "sell_limit" in rules:
                     body.append(f"⚖ limit sell {rules.get('sell_limit_pct', 100)}% at >= ${float(rules['sell_limit']):.10g}")
+                    rows.append([(f"❌ cancel sell-limit {mint[:6]}", f"limitcancel:s:{mint}")])
                 if not body: continue
                 cur = best_price_usd(mint) or 0
                 if cur: body.append(f"now: ${cur:.10g}")
                 tag = "📊 holding" if mint in pos else "(no position)"
                 lines.append(f"<code>{mint[:8]}..</code> {tag}\n  " + "\n  ".join(body))
-            tg_send(tg["token"], chat, "📋 <b>Active rules</b>\n\n" + ("\n\n".join(lines) or "(empty)"))
+            if not lines:
+                tg_send(tg["token"], chat, "📋 no active rules.\nset: /sl /tp /trail /limitbuy /limitsell")
+                return
+            out = "📋 <b>Active rules</b>\n\n" + "\n\n".join(lines)
+            if rows:
+                out += "\n\nTap to cancel a limit:"
+                tg_buttons(tg["token"], chat, out, rows)
+            else:
+                tg_send(tg["token"], chat, out)
         except Exception as e:
             tg_send(tg["token"], chat, f"rules error: {e}")
     elif text.startswith("/balance"):
@@ -1090,6 +1105,18 @@ def parse_price(s):
     return float(s)  # plain / scientific
 
 
+def token_brief(mint):
+    """One-line token context for confirmations."""
+    try:
+        d = dex_summary(mint)
+        if not d:
+            return "  (not indexed yet — no market data)\n"
+        return (f"  {esc(d['symbol'])} | {esc(d['dex'])}\n"
+                f"  now: ${d['price']} | mcap ${d['mcap']/1e3:,.0f}K | liq ${d['liq']/1e3:,.0f}K\n")
+    except Exception:
+        return ""
+
+
 def position_line(ca):
     """"Your position" line with live PnL, if the bot wallet holds this token."""
     try:
@@ -1253,6 +1280,16 @@ def handle_callback(tg, chat, cb_id, data):
             return
         if action == "posview":
             positions_view(tg, chat)
+            return
+        if action == "limitcancel":
+            from trading_bot import clear_rule
+            label = {"b": "buy", "s": "sell"}.get(val, "")
+            if val in ("b", "all"):
+                clear_rule(ca, "buy_limit", "buy_limit_sol")
+            if val in ("s", "all"):
+                clear_rule(ca, "sell_limit", "sell_limit_pct")
+            tg_send(tg["token"], chat,
+                    f"❌ limit {label} cancelled for <code>{ca[:8]}..</code>")
             return
         if action in ("tpset", "slset"):
             # tpset:<target_pct>:<sell_pct>:<ca>   slset:<pct>:x:<ca>
