@@ -296,6 +296,12 @@ def is_denied(mint=None, wallet=None):
     if wallet and wallet in d.get("wallets", []): return True
     return False
 
+def load(p, default):
+    try:
+        with open(p) as f: return json.load(f)
+    except Exception:
+        return default
+
 def log_trade(action, mint, symbol, sol_amount, sig=None, err=None):
     """Audit trail: every auto-action is logged forever."""
     d = load(HIST_PATH, {"trades": []})
