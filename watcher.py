@@ -1748,9 +1748,14 @@ def pnl_poll_loop(tg, chat):
                             tg_send(tg["token"], chat,
                                     f"❌ limit sell for <code>{mint[:8]}..</code> gave up after {satt} attempts")
                         elif satt == 1:
+                            try:
+                                _b = _sb_l(_lw_l()[1]) or 0
+                                bal_note = f"\nwallet: {_b:.4f} SOL" + (" — too low, top up 0.05+ SOL" if _b < 0.01 else "")
+                            except Exception:
+                                bal_note = ""
                             tg_buttons(tg["token"], chat,
-                                    f"⚠️ limit sell failed: {err}\nrule KEPT — retrying every 60s",
-                                    [[("❌ Cancel limit", f"limitcancel:s:{mint}")]])
+                                    f"⚠️ limit sell failed: {err}\nrule KEPT — retrying every 60s{bal_note}",
+                                    [[("❌ Cancel limit", f"limitcancel:s:{mint}"), ("🔄 /balance", "balance:check")]])
                     else:
                         record_sell(mint, pct)
                         clear_rule(mint, "sell_limit", "sell_limit_pct", "sell_limit_att", "sell_limit_mc")
