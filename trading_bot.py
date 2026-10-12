@@ -342,9 +342,13 @@ def position_pnl(mint):
         sym = (best["baseToken"]["symbol"] if best else p["symbol"]) or "?"
     except Exception:
         price_usd, sym = 0, p["symbol"]
-    usd = p["tokens"] * price_usd
+    if not price_usd:
+        return None  # no live price — never compute (or auto-trade on) a fake PnL
     sp = sol_price_usd()
-    val_sol = (usd / sp) if (sp and usd) else 0
+    if not sp:
+        return None  # no SOL price — same rule
+    usd = p["tokens"] * price_usd
+    val_sol = usd / sp
     pnl_sol = val_sol - p["sol_in"]
     pnl_pct = (pnl_sol / p["sol_in"] * 100) if p["sol_in"] else 0
     return sym, val_sol, pnl_sol, pnl_pct, p["tokens"]

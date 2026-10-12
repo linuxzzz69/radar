@@ -960,15 +960,18 @@ def save_offset(new_offset):
 def position_line(ca):
     """"Your position" line with live PnL, if the bot wallet holds this token."""
     try:
-        from trading_bot import load_positions, position_pnl, load_wallet, token_balance
-        if load_positions().get(ca, {}).get("tokens", 0) <= 0:
-            # unresolved post-buy record: check the live chain balance
+        from trading_bot import load_positions, position_pnl, load_wallet, token_amount_ui
+        p = load_positions().get(ca)
+        if p and p.get("tokens", 0) > 0:
+            ui = p["tokens"]
+        else:
             _, pub_w = load_wallet()
-            if token_balance(pub_w, ca) <= 0:
+            ui, _dec = token_amount_ui(pub_w, ca)
+            if ui <= 0:
                 return ""
         r = position_pnl(ca)
         if not r:
-            return ""
+            return f"📊 <b>YOUR POSITION</b>: {ui:,.4f} (price unavailable)\n"
         sym, val_sol, pnl_sol, pnl_pct, tokens = r
         usd = tokens * (best_price_usd(ca) or 0)
         emoji = "🟢" if pnl_pct >= 0 else "🔴"
@@ -1004,6 +1007,7 @@ def execute_buy(tg, chat, ca, amt):
             tg_send(tg["token"], chat, f"❌ buy failed: {err}")
         else:
             try:
+                time.sleep(5)  # let the tx land before measuring fees
                 bal_post = _sol_balance(pub_pre)
                 fees = max(0.0, bal_pre - bal_post - amt)
                 sol_price = best_price_usd("So11111111111111111111111111111111111111112") or 0
@@ -1161,6 +1165,7 @@ def handle_callback(tg, chat, cb_id, data):
             else:
                 line = ""
                 try:
+                    time.sleep(5)  # let the sell tx land before measuring
                     bal_post = _sb(pub_s)
                     net = bal_post - bal_pre
                     sp = best_price_usd("So11111111111111111111111111111111111111112") or 0
