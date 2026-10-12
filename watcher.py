@@ -838,15 +838,24 @@ def handle_command(tg, chat, text, state):
                                 f"tx: https://solscan.io/tx/{sig}\n/positions for PnL")
                     return
                 if sol < 0.06:
+                    holding = 0
+                    try:
+                        from trading_bot import load_positions
+                        holding = load_positions().get(ca, {}).get("tokens", 0)
+                    except Exception:
+                        pass
+                    rows = [[("✏️ Custom", f"buy:custom:{ca}"), ("💼 Positions", "posview:x:x"), ("🔧 /balance", "balance:check")],
+                            [("🎯 TP 2x 50%", f"tpset:100:50:{ca}"), ("🛑 SL -30%", f"slset:-30:x:{ca}")]]
+                    if holding > 0:
+                        rows.insert(1, [("🔴 Sell 25%", f"sell:25:{ca}"), ("🔴 Sell 50%", f"sell:50:{ca}"), ("🔴 Sell 100%", f"sell:100:{ca}")])
                     tg_buttons(tg["token"], chat,
                             f"⚡ <b>TRADE PANEL</b> — <code>{pub[:8]}..</code>\n💰 {sol:.4f} SOL — presets need 0.06+, or buy any amount via Custom.",
-                            [[("✏️ Custom", f"buy:custom:{ca}"), ("🔧 /balance", "balance:check")],
-                             [("🎯 TP 2x 50%", f"tpset:100:50:{ca}"), ("🛑 SL -30%", f"slset:-30:x:{ca}")]])
+                            rows)
                     return
                 tg_buttons(tg["token"], chat,
                         f"⚡ <b>TRADE PANEL</b> — <code>{pub[:8]}..</code> ({sol:.3f} SOL)\nTap a button — the bot signs and executes instantly.",
                         [[("🟢 Buy 0.05", f"buy:0.05:{ca}"), ("🟢 Buy 0.1", f"buy:0.1:{ca}"), ("🟢 Buy 0.25", f"buy:0.25:{ca}"), ("✏️ Custom", f"buy:custom:{ca}")],
-                         [("🔴 Sell 25%", f"sell:25:{ca}"), ("🔴 Sell 50%", f"sell:50:{ca}"), ("🔴 Sell 100%", f"sell:100:{ca}")],
+                         [("🔴 Sell 25%", f"sell:25:{ca}"), ("🔴 Sell 50%", f"sell:50:{ca}"), ("🔴 Sell 100%", f"sell:100:{ca}"), ("💼 Positions", "posview:x:x")],
                          [("🎯 TP 2x 50%", f"tpset:100:50:{ca}"), ("🎯 TP 2x 100%", f"tpset:100:100:{ca}"), ("🛑 SL -30%", f"slset:-30:x:{ca}")]])
             except Exception as e:
                 tg_send(tg["token"], chat, f"trade panel error: {e}")
@@ -891,15 +900,24 @@ def trade_panel_msg(ca):
                         f"tx: https://solscan.io/tx/{sig}\n/positions for PnL")
             return
         if sol < 0.06:
+            holding = 0
+            try:
+                from trading_bot import load_positions
+                holding = load_positions().get(ca, {}).get("tokens", 0)
+            except Exception:
+                pass
+            rows = [[("✏️ Custom", f"buy:custom:{ca}"), ("💼 Positions", "posview:x:x"), ("🔧 /balance", "balance:check")],
+                    [("🎯 TP 2x 50%", f"tpset:100:50:{ca}"), ("🛑 SL -30%", f"slset:-30:x:{ca}")]]
+            if holding > 0:
+                rows.insert(1, [("🔴 Sell 25%", f"sell:25:{ca}"), ("🔴 Sell 50%", f"sell:50:{ca}"), ("🔴 Sell 100%", f"sell:100:{ca}")])
             tg_buttons(tg["token"], chat,
                     f"⚡ <b>TRADE PANEL</b> — <code>{pub[:8]}..</code>\n💰 {sol:.4f} SOL — presets need 0.06+, or buy any amount via Custom.",
-                    [[("✏️ Custom", f"buy:custom:{ca}"), ("🔧 /balance", "balance:check")],
-                     [("🎯 TP 2x 50%", f"tpset:100:50:{ca}"), ("🛑 SL -30%", f"slset:-30:x:{ca}")]])
+                    rows)
             return
         tg_buttons(tg["token"], chat,
                 f"⚡ <b>TRADE PANEL</b> — <code>{pub[:8]}..</code> ({sol:.3f} SOL)\nTap a button — the bot signs and executes instantly.",
                 [[("🟢 Buy 0.05", f"buy:0.05:{ca}"), ("🟢 Buy 0.1", f"buy:0.1:{ca}"), ("🟢 Buy 0.25", f"buy:0.25:{ca}"), ("✏️ Custom", f"buy:custom:{ca}")],
-                 [("🔴 Sell 25%", f"sell:25:{ca}"), ("🔴 Sell 50%", f"sell:50:{ca}"), ("🔴 Sell 100%", f"sell:100:{ca}")],
+                 [("🔴 Sell 25%", f"sell:25:{ca}"), ("🔴 Sell 50%", f"sell:50:{ca}"), ("🔴 Sell 100%", f"sell:100:{ca}"), ("💼 Positions", "posview:x:x")],
                  [("🎯 TP 2x 50%", f"tpset:100:50:{ca}"), ("🎯 TP 2x 100%", f"tpset:100:100:{ca}"), ("🛑 SL -30%", f"slset:-30:x:{ca}")]])
     except Exception as e:
         try:
@@ -981,6 +999,33 @@ def execute_buy(tg, chat, ca, amt):
         tg_send(tg["token"], chat, f"buy error: {e}")
 
 
+def positions_view(tg, chat):
+    """All open positions, each with its own partial-sell buttons."""
+    try:
+        from trading_bot import load_positions, position_pnl
+        d = load_positions()
+        lines, rows = [], []
+        for mint, p in list(d.items()):
+            if p.get("tokens", 0) <= 0: continue
+            r = position_pnl(mint)
+            if not r: continue
+            sym, val_sol, pnl_sol, pnl_pct, tokens = r
+            lines.append(f"• <b>{esc(sym)}</b> {pnl_pct:+.1f}% ({pnl_sol:+.4f} SOL) — ${tokens * (best_price_usd(mint) or 0):.2f}")
+            s = sym[:10]
+            rows.append([(f"🔴 {s} 25%", f"sell:25:{mint}"),
+                         (f"🔴 {s} 50%", f"sell:50:{mint}"),
+                         (f"🔴 {s} 100%", f"sell:100:{mint}")])
+            if len(rows) >= 8: break
+        if not rows:
+            tg_send(tg["token"], chat, "💼 no open positions")
+            return
+        tg_buttons(tg["token"], chat,
+                   "💼 <b>Positions</b>\n" + "\n".join(lines) + "\nSell any position:",
+                   rows)
+    except Exception as e:
+        tg_send(tg["token"], chat, f"positions error: {e}")
+
+
 def handle_callback(tg, chat, cb_id, data):
     """data format: buy:<amount>:<ca>  or  sell:<pct>:<ca>"""
     st = load(STATE_PATH, {})
@@ -1028,6 +1073,9 @@ def handle_callback(tg, chat, cb_id, data):
                     f"✏️ how much SOL for <code>{ca[:8]}..</code>?\n"
                     f"reply with just the amount (e.g. 0.005)\n"
                     f"any other message cancels")
+            return
+        if action == "posview":
+            positions_view(tg, chat)
             return
         if action in ("tpset", "slset"):
             # tpset:<target_pct>:<sell_pct>:<ca>   slset:<pct>:x:<ca>
