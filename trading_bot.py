@@ -581,14 +581,50 @@ def load(p, default):
     except Exception:
         return default
 
-def log_trade(action, mint, symbol, sol_amount, sig=None, err=None):
-    """Audit trail: every auto-action is logged forever."""
+def log_trade(action, mint, symbol, sol_amount, sig=None, err=None, meta=None):
+    """Audit trail: every auto-action is logged forever. meta = extra journal fields."""
     d = load(HIST_PATH, {})
-    d.setdefault("trades", []).append({
+    e = {
         "ts": time.time(), "action": action, "mint": mint, "symbol": symbol,
         "sol": sol_amount, "sig": sig, "error": err
-    })
+    }
+    if meta:
+        e.update(meta)
+    d.setdefault("trades", []).append(e)
     with open(HIST_PATH, "w") as f: json.dump(d, f, indent=1)
+
+
+def trade_journal(n=10):
+    """Newest-first journal lines for /trades."""
+    from html import escape as _esc
+    d = load(HIST_PATH, {})
+    trades = [t for t in d.get("trades", [])
+              if t.get("action") in ("trade_open", "trade_closed") and not t.get("error")]
+    trades = trades[-n:][::-1]
+    lines = []
+    for t in trades:
+        import time as _t
+        when = _t.strftime("%H:%M", _t.gmtime(t.get("ts", 0)))
+        sym = _esc(t.get("symbol") or "?")
+        if t["action"] == "trade_open":
+            mc = t.get("entry_mcap")
+            pr = t.get("entry_price")
+            lines.append(
+                f"🟢 <b>BUY</b>  {sym} — {t.get('sol', 0):.4f} SOL"
+                + (f" | mcap ${mc/1e3:,.0f}K" if mc else "")
+                + (f" | price ${pr}" if pr else "")
+                + f"\n     {when} · <code>{t.get('mint','')[:10]}..</code>")
+        else:
+            pnl = t.get("pnl_sol", 0)
+            pct = t.get("pnl_pct", 0)
+            e_mc, x_mc = t.get("entry_mcap"), t.get("exit_mcap")
+            emoji = "✅" if pnl >= 0 else "🔻"
+            lines.append(
+                f"{emoji} <b>SELL</b> {sym} — {pct:+.1f}% ({pnl:+.4f} SOL)"
+                + (f" | ${t.get('entry_sol',0):.4f} in → {t.get('sol',0):.4f} out" if t.get("sol") else "")
+                + (f"\n     buy mcap ${e_mc/1e3:,.0f}K → sell mcap ${x_mc/1e3:,.0f}K" if e_mc and x_mc else "")
+                + f"\n     {when} · https://solscan.io/tx/{t.get('sig','')}")
+    return lines
 
 def daily_spend():
     """Total SOL spent on buys in the last 24h (guardrail)."""

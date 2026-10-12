@@ -624,6 +624,7 @@ def handle_command(tg, chat, text, state):
                 "/rules - all active rules (SL/TP/trail/limits) + current prices\n"
                 "/cancelall - cancel ALL limit buys/sells at once\n"
                 "/sellall - dump every open position at market NOW\n"
+                "/trades - journal: every buy/sell with mcaps, prices, PnL\n"
                 "/positions - PnL overview\n"
                 "/smart <CA> - find realized-PnL wallets\n"
                 "/pnl <CA> - position audit (smart money status)\n"
@@ -973,6 +974,16 @@ def handle_command(tg, chat, text, state):
                 tg_send(tg["token"], chat, out)
         except Exception as e:
             tg_send(tg["token"], chat, f"rules error: {e}")
+    elif text == "/trades":
+        try:
+            from trading_bot import trade_journal
+            lines = trade_journal(10)
+            tg_send(tg["token"], chat,
+                    "📒 <b>TRADE JOURNAL</b> — last 10\n\n"
+                    + ("\n\n".join(lines) if lines else
+                       "(no journal entries yet — new trades will record entry/exit mcap, prices and PnL)"))
+        except Exception as e:
+            tg_send(tg["token"], chat, f"trades error: {e}")
     elif text == "/sellall":
         threading.Thread(target=sell_all_positions, args=(tg, chat), daemon=True).start()
     elif text.startswith("/cancelall"):
@@ -1341,8 +1352,10 @@ def execute_buy(tg, chat, ca, amt):
             tg_send(tg["token"], chat, f"❌ buy failed: {err}")
             return False
         try:
-            from trading_bot import record_entry_meta
+            from trading_bot import record_entry_meta, log_trade as _lt
             record_entry_meta(ca, e_mcap, e_price)
+            _lt("trade_open", ca, sym, amt, sig=sig,
+                meta={"entry_mcap": e_mcap, "entry_price": e_price})
             bal_post = wait_balance_settle(pub_pre, bal_pre)
             fees = max(0.0, bal_pre - bal_post - amt)
             sol_price = best_price_usd("So11111111111111111111111111111111111111112") or 0
@@ -1664,6 +1677,23 @@ def handle_callback(tg, chat, cb_id, data):
                         f"tx: https://solscan.io/tx/{sig}\n"
                         f"{exit_line}{line}{pnl_line}"
                         f"/positions for the rest")
+                # journal the completed round trip
+                try:
+                    from trading_bot import log_trade as _lt2
+                    pnl_s = pnl_pct = 0.0
+                    try:
+                        if net > 0 and sol_in > 0:
+                            pnl_s = net - sol_in * pct / 100
+                            pnl_pct = pnl_s / (sol_in * pct / 100) * 100
+                    except Exception:
+                        pass
+                    _lt2("trade_closed", ca, sym_x, round(net, 6) if net > 0 else 0, sig=sig,
+                         meta={"pct": pct, "entry_sol": sol_in,
+                               "entry_mcap": entry_mcap, "exit_mcap": x_mcap_k * 1e3 if x_mcap_k else 0,
+                               "exit_price": x_price_str, "pnl_sol": round(pnl_s, 6),
+                               "pnl_pct": round(pnl_pct, 1)})
+                except Exception:
+                    pass
                 # close the LIVE card so it stops showing stale PnL
                 try:
                     card = load_card(ca)
