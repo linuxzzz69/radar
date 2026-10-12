@@ -1349,7 +1349,17 @@ def execute_buy(tg, chat, ca, amt):
             except Exception:
                 pass
         e_price = float(best.get("priceUsd") or 0) if best else 0
+        if not e_price and e_mcap:
+            try:
+                from trading_bot import token_supply as _tsup
+                _sup = _tsup(ca)
+                if _sup:
+                    e_price = e_mcap / _sup
+            except Exception:
+                pass
         e_price_str = (best.get("priceUsd") or "") if best else ""
+        if not e_price_str and e_price:
+            e_price_str = f"{e_price:.10f}".rstrip("0").rstrip(".")
         entry_line = (f"📈 entry: mcap ${e_mcap/1e3:,.0f}K | price ${e_price_str}\n"
                       if e_mcap else "")
         _, pub_pre = load_wallet()
