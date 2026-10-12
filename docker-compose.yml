@@ -8,7 +8,7 @@ services:
     # env_file:
     #   - .env
     volumes:
-      - ./watch_config.json:/app/watch_config.json:ro      # secrets stay OUTSIDE the image
+      - ./watch_config.json:/app/watch_config.json    # rw: /autobuy and /add edit it live
       - ./watcher_state.json:/app/watcher_state.json
       - ./.bot_wallet.json:/app/.bot_wallet.json:ro        # hot wallet key (mounted, never baked)
       - ./.bot_positions.json:/app/.bot_positions.json     # positions book — MUST survive deploys

@@ -611,6 +611,7 @@ def handle_command(tg, chat, text, state):
                 "/export - show private key ONCE (backup it!)\n"
                 "/balance - bot wallet SOL balance\n"
                 "/buy CA SOL - custom amount buy (e.g. /buy 8ZLB... 0.005)\n"
+                "/autobuy <SOL|off> - auto-buy this amount on every CA you send\n"
                 "/status - radar health\n"
                 "/add <addr> <label> <funder|smart> [min_sol]\n"
                 "/remove <addr>\n"
@@ -986,6 +987,29 @@ def handle_command(tg, chat, text, state):
             tg_send(tg["token"], chat, f"trades error: {e}")
     elif text == "/sellall":
         threading.Thread(target=sell_all_positions, args=(tg, chat), daemon=True).start()
+    elif text.startswith("/autobuy"):
+        parts = text.split()
+        cfg2 = load(CFG_PATH, {}) or {}
+        if len(parts) > 1 and parts[1].lower() in ("off", "no", "0"):
+            cfg2.setdefault("trading", {})["autobuy"] = False
+            save(CFG_PATH, cfg2)
+            tg_send(tg["token"], chat, "🤖 <b>auto-buy OFF</b> — scans only, panels still have buttons")
+            return
+        try:
+            amt = parse_price(parts[1]) if len(parts) > 1 else 0.005
+        except (ValueError, IndexError):
+            tg_send(tg["token"], chat, "usage: /autobuy 0.005   or   /autobuy off")
+            return
+        if amt < 0.001:
+            tg_send(tg["token"], chat, "min 0.001 SOL")
+            return
+        cfg2.setdefault("trading", {})["autobuy"] = True
+        cfg2["trading"]["preset_sol"] = amt
+        save(CFG_PATH, cfg2)
+        tg_send(tg["token"], chat,
+                f"🤖 <b>auto-buy ON</b> — every CA you send now buys <b>{amt} SOL</b> automatically\n"
+                f"(scan + trace still run first; balance gate still applies)\n"
+                f"turn off: /autobuy off")
     elif text.startswith("/cancelall"):
         from trading_bot import clear_all_limits
         cleared = clear_all_limits()
@@ -1093,8 +1117,8 @@ def handle_command(tg, chat, text, state):
                     return
                 _, pub = load_wallet()
                 sol = sol_balance(pub)
-                if cfg_t.get("autobuy") and sol >= float(cfg_t.get("preset_sol", 0.05)) + 0.02:
-                    preset = float(cfg_t.get("preset_sol", 0.05))
+                if cfg_t.get("autobuy") and sol >= float(cfg_t.get("preset_sol", 0.005)) + 0.005:
+                    preset = float(cfg_t.get("preset_sol", 0.005))
                     tg_send(tg["token"], chat, f"⏳ auto-buying {preset} SOL of <code>{ca[:8]}..</code> ...")
                     from trading_bot import do_buy, record_buy
                     sig, err = do_buy(ca, preset)
@@ -1112,7 +1136,7 @@ def handle_command(tg, chat, text, state):
                                 f"✅ <b>AUTO-BOUGHT</b> {preset} SOL of {sym}\n"
                                 f"tx: https://solscan.io/tx/{sig}\n/positions for PnL")
                     return
-                if sol < 0.06:
+                if sol < 0.011:
                     holding = 0
                     try:
                         from trading_bot import load_positions, token_balance
@@ -1132,7 +1156,7 @@ def handle_command(tg, chat, text, state):
                     return
                 tg_buttons(tg["token"], chat,
                         f"⚡ <b>TRADE PANEL</b> — <code>{pub[:8]}..</code> ({sol:.3f} SOL)\n{position_line(ca)}Tap a button — the bot signs and executes instantly.",
-                        [[("🟢 Buy 0.05", f"buy:0.05:{ca}"), ("🟢 Buy 0.1", f"buy:0.1:{ca}"), ("🟢 Buy 0.25", f"buy:0.25:{ca}"), ("✏️ Custom", f"buy:custom:{ca}")],
+                        [[("🟢 0.005", f"buy:0.005:{ca}"), ("🟢 0.01", f"buy:0.01:{ca}"), ("🟢 0.05", f"buy:0.05:{ca}"), ("🟢 0.1", f"buy:0.1:{ca}"), ("🟢 0.25", f"buy:0.25:{ca}"), ("✏️ Custom", f"buy:custom:{ca}")],
                          [("🔴 Sell 25%", f"sell:25:{ca}"), ("🔴 Sell 50%", f"sell:50:{ca}"), ("🔴 Sell 100%", f"sell:100:{ca}"), ("💼 Positions", "posview:x:x")],
                          [("🎯 TP 2x 50%", f"tpset:100:50:{ca}"), ("🎯 TP 2x 100%", f"tpset:100:100:{ca}"), ("🛑 SL -30%", f"slset:-30:x:{ca}")]])
             except Exception as e:
@@ -1177,7 +1201,7 @@ def trade_panel_msg(ca):
                         f"✅ <b>AUTO-BOUGHT</b> {preset} SOL of {sym}\n"
                         f"tx: https://solscan.io/tx/{sig}\n/positions for PnL")
             return
-        if sol < 0.06:
+        if sol < 0.011:
             holding = 0
             try:
                 from trading_bot import load_positions, token_balance
@@ -1197,7 +1221,7 @@ def trade_panel_msg(ca):
             return
         tg_buttons(tg["token"], chat,
                 f"⚡ <b>TRADE PANEL</b> — <code>{pub[:8]}..</code> ({sol:.3f} SOL)\n{position_line(ca)}Tap a button — the bot signs and executes instantly.",
-                [[("🟢 Buy 0.05", f"buy:0.05:{ca}"), ("🟢 Buy 0.1", f"buy:0.1:{ca}"), ("🟢 Buy 0.25", f"buy:0.25:{ca}"), ("✏️ Custom", f"buy:custom:{ca}")],
+                [[("🟢 0.005", f"buy:0.005:{ca}"), ("🟢 0.01", f"buy:0.01:{ca}"), ("🟢 0.05", f"buy:0.05:{ca}"), ("🟢 0.1", f"buy:0.1:{ca}"), ("🟢 0.25", f"buy:0.25:{ca}"), ("✏️ Custom", f"buy:custom:{ca}")],
                  [("🔴 Sell 25%", f"sell:25:{ca}"), ("🔴 Sell 50%", f"sell:50:{ca}"), ("🔴 Sell 100%", f"sell:100:{ca}"), ("💼 Positions", "posview:x:x")],
                  [("🎯 TP 2x 50%", f"tpset:100:50:{ca}"), ("🎯 TP 2x 100%", f"tpset:100:100:{ca}"), ("🛑 SL -30%", f"slset:-30:x:{ca}")]])
     except Exception as e:
