@@ -63,6 +63,30 @@ def token_balance(pubkey, mint):
     except Exception:
         return 0
 
+def token_amount_ui(pubkey, mint):
+    """(ui_amount, decimals) as shown in wallets. ui_amount is 0 if no account."""
+    body = json.dumps({"jsonrpc": "2.0", "id": 1, "method": "getTokenAccountsByOwner",
+                       "params": [pubkey, {"mint": mint}, {"encoding": "jsonParsed"}]}).encode()
+    try:
+        r = json.load(urllib.request.urlopen(urllib.request.Request(RPC, data=body, headers=UA), timeout=20))
+        ui, dec = 0.0, 0
+        for a in r.get("result", {}).get("value", []):
+            ta = a["account"]["data"]["parsed"]["info"]["tokenAmount"]
+            ui += float(ta.get("uiAmount") or 0)
+            dec = int(ta.get("decimals") or 0)
+        return ui, dec
+    except Exception:
+        return 0.0, 0
+
+def sol_price_usd():
+    try:
+        dd = get_json("https://api.dexscreener.com/latest/dex/tokens/So11111111111111111111111111111111111111112")
+        ps = dd.get("pairs") or []
+        best = max(ps, key=lambda x: (x.get("liquidity") or {}).get("usd", 0)) if ps else None
+        return float(best["priceUsd"]) if best and best.get("priceUsd") else 0.0
+    except Exception:
+        return 0.0
+
 def jup_quote(in_mint, out_mint, amount_raw):
     url = f"{JUP_QUOTE}?inputMint={in_mint}&outputMint={out_mint}&amount={amount_raw}&slippageBps=150"
     try:
@@ -174,8 +198,9 @@ def record_buy(mint, symbol, sol_spent, tokens):
 def record_sell(mint, pct):
     d = load_positions()
     if mint in d:
-        d[mint]["tokens"] = int(d[mint]["tokens"] * (100 - pct) / 100)
-        if d[mint]["tokens"] <= 0:
+        # tokens are UI (wallet-display) units — keep fractional, delete on dust
+        d[mint]["tokens"] = d[mint]["tokens"] * (100 - pct) / 100
+        if d[mint]["tokens"] <= 1e-6:
             del d[mint]
         save_positions(d)
 
@@ -185,6 +210,7 @@ def positions_overview():
     _, pub = load_wallet()
     lines = []
     net_sol = sol_balance(pub)
+    sp = sol_price_usd()
     for mint, p in d.items():
         if p["tokens"] <= 0: continue
         # live price via DexScreener
@@ -193,17 +219,18 @@ def positions_overview():
             ps = dd.get("pairs") or []
             best = max(ps, key=lambda x: (x.get("liquidity") or {}).get("usd", 0)) if ps else None
             price_usd = float(best["priceUsd"]) if best and best.get("priceUsd") else 0
-            val_sol = (p["tokens"] * price_usd) / 1e9 if price_usd else 0
             sym = best["baseToken"]["symbol"] if best else p["symbol"]
         except Exception:
-            price_usd, val_sol, sym = 0, 0, p["symbol"]
+            price_usd, sym = 0, p["symbol"]
+        usd = p["tokens"] * price_usd
+        val_sol = (usd / sp) if (sp and usd) else 0
         pnl_sol = val_sol - p["sol_in"]
         pnl_pct = (pnl_sol / p["sol_in"] * 100) if p["sol_in"] else 0
         emoji = "🟢" if pnl_pct >= 0 else "🔴"
         lines.append(
             f"/{sym} {emoji}\n"
             f"PnL: {pnl_pct:+.1f}% / {pnl_sol:+.4f} SOL\n"
-            f"Value: ${(p['tokens']*price_usd):.2f} / {val_sol:.4f} SOL\n"
+            f"Value: ${usd:.2f} / {val_sol:.4f} SOL\n"
             f"Entry: {p['sol_in']:.4f} SOL"
         )
         net_sol += val_sol
@@ -262,7 +289,8 @@ def load_card(mint):
     return load_card_all().get(mint)
 
 def position_pnl(mint):
-    """Return (symbol, value_sol, pnl_sol, pnl_pct, tokens) for an open position."""
+    """Return (symbol, value_sol, pnl_sol, pnl_pct, tokens) for an open position.
+    tokens is in UI (wallet-display) units."""
     d = load_positions()
     p = d.get(mint)
     if not p: return None
@@ -270,9 +298,9 @@ def position_pnl(mint):
     if p.get("tokens", 0) <= 0:
         try:
             _, pub = load_wallet()
-            live = token_balance(pub, mint)
-            if live > 0:
-                p["tokens"] = live
+            ui, _dec = token_amount_ui(pub, mint)
+            if ui > 0:
+                p["tokens"] = ui
                 d[mint] = p
                 save_positions(d)
         except Exception:
@@ -286,7 +314,9 @@ def position_pnl(mint):
         sym = (best["baseToken"]["symbol"] if best else p["symbol"]) or "?"
     except Exception:
         price_usd, sym = 0, p["symbol"]
-    val_sol = (p["tokens"] * price_usd) / 1e9
+    usd = p["tokens"] * price_usd
+    sp = sol_price_usd()
+    val_sol = (usd / sp) if (sp and usd) else 0
     pnl_sol = val_sol - p["sol_in"]
     pnl_pct = (pnl_sol / p["sol_in"] * 100) if p["sol_in"] else 0
     return sym, val_sol, pnl_sol, pnl_pct, p["tokens"]
