@@ -602,14 +602,14 @@ def hardened_buy(mint, symbol, sol_amount, max_daily=0.5):
     return sig, err
 
 def clear_all_limits():
-    """Cancel every limit buy/sell rule across all tokens. TP/SL/trail untouched."""
+    """Cancel every limit buy/sell rule (price and mcap modes). TP/SL/trail untouched."""
     d = load_sltp()
     cleared = []
     for mint, rules in list(d.items()):
-        if not any(k in rules for k in ("buy_limit", "sell_limit")):
+        if not any(k in rules for k in ("buy_limit", "sell_limit", "buy_limit_mc", "sell_limit_mc")):
             continue
-        for k in ("buy_limit", "buy_limit_sol", "buy_limit_att",
-                  "sell_limit", "sell_limit_pct", "sell_limit_att"):
+        for k in ("buy_limit", "buy_limit_sol", "buy_limit_att", "buy_limit_mc",
+                   "sell_limit", "sell_limit_pct", "sell_limit_att", "sell_limit_mc"):
             rules.pop(k, None)
         if not rules:
             d.pop(mint)
@@ -617,6 +617,19 @@ def clear_all_limits():
     if cleared:
         save_sltp(d)
     return cleared
+
+
+def mcap_usd(mint):
+    """Live market cap from DexScreener's best-pair data (what gmgn shows)."""
+    try:
+        dd = get_json(f"https://api.dexscreener.com/latest/dex/tokens/{mint}")
+        ps = dd.get("pairs") or []
+        best = max(ps, key=lambda x: (x.get("liquidity") or {}).get("usd", 0)) if ps else None
+        if best and best.get("marketCap"):
+            return float(best["marketCap"])
+    except Exception:
+        pass
+    return 0.0
 
 
 def trade_volume():
