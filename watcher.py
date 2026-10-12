@@ -840,12 +840,14 @@ def handle_command(tg, chat, text, state):
                 if sol < 0.06:
                     tg_buttons(tg["token"], chat,
                             f"⚡ <b>TRADE PANEL</b> — <code>{pub[:8]}..</code>\n💰 {sol:.4f} SOL — presets need 0.06+, or buy any amount via Custom.",
-                            [[("✏️ Custom", f"buy:custom:{ca}"), ("🔧 /balance", "balance:check")]])
+                            [[("✏️ Custom", f"buy:custom:{ca}"), ("🔧 /balance", "balance:check")],
+                             [("🎯 TP 2x 50%", f"tpset:100:50:{ca}"), ("🛑 SL -30%", f"slset:-30:x:{ca}")]])
                     return
                 tg_buttons(tg["token"], chat,
                         f"⚡ <b>TRADE PANEL</b> — <code>{pub[:8]}..</code> ({sol:.3f} SOL)\nTap a button — the bot signs and executes instantly.",
                         [[("🟢 Buy 0.05", f"buy:0.05:{ca}"), ("🟢 Buy 0.1", f"buy:0.1:{ca}"), ("🟢 Buy 0.25", f"buy:0.25:{ca}"), ("✏️ Custom", f"buy:custom:{ca}")],
-                         [("🔴 Sell 25%", f"sell:25:{ca}"), ("🔴 Sell 50%", f"sell:50:{ca}"), ("🔴 Sell 100%", f"sell:100:{ca}")]])
+                         [("🔴 Sell 25%", f"sell:25:{ca}"), ("🔴 Sell 50%", f"sell:50:{ca}"), ("🔴 Sell 100%", f"sell:100:{ca}")],
+                         [("🎯 TP 2x 50%", f"tpset:100:50:{ca}"), ("🎯 TP 2x 100%", f"tpset:100:100:{ca}"), ("🛑 SL -30%", f"slset:-30:x:{ca}")]])
             except Exception as e:
                 tg_send(tg["token"], chat, f"trade panel error: {e}")
         threading.Thread(target=send_trade_panel, args=(text,), daemon=True).start()
@@ -891,12 +893,14 @@ def trade_panel_msg(ca):
         if sol < 0.06:
             tg_buttons(tg["token"], chat,
                     f"⚡ <b>TRADE PANEL</b> — <code>{pub[:8]}..</code>\n💰 {sol:.4f} SOL — presets need 0.06+, or buy any amount via Custom.",
-                    [[("✏️ Custom", f"buy:custom:{ca}"), ("🔧 /balance", "balance:check")]])
+                    [[("✏️ Custom", f"buy:custom:{ca}"), ("🔧 /balance", "balance:check")],
+                     [("🎯 TP 2x 50%", f"tpset:100:50:{ca}"), ("🛑 SL -30%", f"slset:-30:x:{ca}")]])
             return
         tg_buttons(tg["token"], chat,
                 f"⚡ <b>TRADE PANEL</b> — <code>{pub[:8]}..</code> ({sol:.3f} SOL)\nTap a button — the bot signs and executes instantly.",
                 [[("🟢 Buy 0.05", f"buy:0.05:{ca}"), ("🟢 Buy 0.1", f"buy:0.1:{ca}"), ("🟢 Buy 0.25", f"buy:0.25:{ca}"), ("✏️ Custom", f"buy:custom:{ca}")],
-                 [("🔴 Sell 25%", f"sell:25:{ca}"), ("🔴 Sell 50%", f"sell:50:{ca}"), ("🔴 Sell 100%", f"sell:100:{ca}")]])
+                 [("🔴 Sell 25%", f"sell:25:{ca}"), ("🔴 Sell 50%", f"sell:50:{ca}"), ("🔴 Sell 100%", f"sell:100:{ca}")],
+                 [("🎯 TP 2x 50%", f"tpset:100:50:{ca}"), ("🎯 TP 2x 100%", f"tpset:100:100:{ca}"), ("🛑 SL -30%", f"slset:-30:x:{ca}")]])
     except Exception as e:
         try:
             tg_send((load(CFG_PATH, {}).get("telegram") or {}).get("token"),
@@ -939,6 +943,8 @@ def execute_buy(tg, chat, ca, amt):
         dd = get_json(f"https://api.dexscreener.com/latest/dex/tokens/{ca}")
         ps = dd.get("pairs") or []
         sym = (max(ps, key=lambda x:(x.get('liquidity') or {}).get('usd',0)).get('baseToken') or {}).get('symbol','?') if ps else '?'
+        _, pub_pre = load_wallet()
+        bal_pre = _sol_balance(pub_pre)
         sig, err = hardened_buy(ca, sym, amt)
         if err and ("insufficient" in str(err) or "Fund" in str(err) or "0.000" in str(err)):
             kp2, pub2 = load_wallet()
@@ -954,10 +960,23 @@ def execute_buy(tg, chat, ca, amt):
         if err:
             tg_send(tg["token"], chat, f"❌ buy failed: {err}")
         else:
-            tg_send(tg["token"], chat,
+            try:
+                bal_post = _sol_balance(pub_pre)
+                fees = max(0.0, bal_pre - bal_post - amt)
+                sol_price = best_price_usd("So11111111111111111111111111111111111111112") or 0
+                fees_usd = fees * sol_price
+                fee_line = (f"⛽ fees+rent: {fees:.4f} SOL (~${fees_usd:.2f})\n"
+                            f"💰 balance: {bal_post:.4f} SOL\n") if fees > 0 else ""
+            except Exception:
+                fee_line = ""
+            tg_buttons(tg["token"], chat,
                     f"✅ <b>BOUGHT</b> {amt} SOL of {sym}\n"
                     f"tx: https://solscan.io/tx/{sig}\n"
-                    f"/balance to check")
+                    f"{fee_line}"
+                    f"Set an exit:",
+                    [[("🎯 TP 2x — sell 50%", f"tpset:100:50:{ca}"),
+                      ("🎯 TP 2x — sell 100%", f"tpset:100:100:{ca}"),
+                      ("🛑 SL -30%", f"slset:-30:x:{ca}")]])
     except Exception as e:
         tg_send(tg["token"], chat, f"buy error: {e}")
 
@@ -1009,6 +1028,31 @@ def handle_callback(tg, chat, cb_id, data):
                     f"✏️ how much SOL for <code>{ca[:8]}..</code>?\n"
                     f"reply with just the amount (e.g. 0.005)\n"
                     f"any other message cancels")
+            return
+        if action in ("tpset", "slset"):
+            # tpset:<target_pct>:<sell_pct>:<ca>   slset:<pct>:x:<ca>
+            ca_r = parts[3] if len(parts) > 3 else None
+            if not ca_r:
+                tg_send(tg["token"], chat, "bad button payload")
+                return
+            from trading_bot import set_rule, load_positions
+            if ca_r not in load_positions():
+                tg_send(tg["token"], chat, "no open position in that token")
+                return
+            tgt = float(val)
+            if action == "tpset":
+                sell_p = int(parts[2]) if len(parts) > 3 else 100
+                set_rule(ca_r, "tp", tgt, None if sell_p >= 100 else sell_p)
+                if sell_p >= 100:
+                    tg_send(tg["token"], chat,
+                            f"🎯 TP set: <code>{ca_r[:8]}..</code> — sell 100% at +{tgt:.0f}% (checked every 60s)")
+                else:
+                    tg_send(tg["token"], chat,
+                            f"🎯 TP set: <code>{ca_r[:8]}..</code> — sell {sell_p}% at +{tgt:.0f}%, rest rides. One-shot.")
+            else:
+                set_rule(ca_r, "sl", tgt)
+                tg_send(tg["token"], chat,
+                        f"🛑 SL set: <code>{ca_r[:8]}..</code> — auto-sell 100% at {tgt:.0f}% (checked every 60s)")
             return
         from trading_bot import wallet_exists, load_wallet, do_buy, do_sell, token_balance
         if not wallet_exists():
