@@ -1152,14 +1152,29 @@ def handle_callback(tg, chat, cb_id, data):
         elif action == "sell":
             pct = int(val)
             tg_send(tg["token"], chat, f"⏳ selling {pct}% of <code>{ca[:8]}..</code> ...")
-            from trading_bot import hardened_sell
+            from trading_bot import hardened_sell, load_wallet, sol_balance as _sb
+            _, pub_s = load_wallet()
+            bal_pre = _sb(pub_s)
             sig, err = hardened_sell(ca, "?", pct)
             if err:
                 tg_send(tg["token"], chat, f"❌ sell failed: {err}")
             else:
+                line = ""
+                try:
+                    bal_post = _sb(pub_s)
+                    net = bal_post - bal_pre
+                    sp = best_price_usd("So11111111111111111111111111111111111111112") or 0
+                    if net > 0:
+                        line = (f"⛽ net received: +{net:.4f} SOL (~${net * sp:.2f}) after fees\n"
+                                f"💰 balance: {bal_post:.4f} SOL\n")
+                    else:
+                        line = f"⛽ fees: {abs(net):.4f} SOL | 💰 balance: {bal_post:.4f} SOL\n"
+                except Exception:
+                    pass
                 tg_send(tg["token"], chat,
                         f"✅ <b>SOLD</b> {pct}% of <code>{ca[:8]}..</code>\n"
                         f"tx: https://solscan.io/tx/{sig}\n"
+                        f"{line}"
                         f"/positions for PnL")
     except Exception as e:
         tg_send(tg["token"], chat, f"trade error: {e}")
