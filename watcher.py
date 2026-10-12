@@ -1355,7 +1355,7 @@ def execute_buy(tg, chat, ca, amt):
             from trading_bot import record_entry_meta, log_trade as _lt
             record_entry_meta(ca, e_mcap, e_price)
             _lt("trade_open", ca, sym, amt, sig=sig,
-                meta={"entry_mcap": e_mcap, "entry_price": e_price})
+                meta={"entry_mcap": e_mcap, "entry_price": e_price_str or e_price})
             bal_post = wait_balance_settle(pub_pre, bal_pre)
             fees = max(0.0, bal_pre - bal_post - amt)
             sol_price = best_price_usd("So11111111111111111111111111111111111111112") or 0
