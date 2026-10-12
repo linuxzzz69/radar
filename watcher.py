@@ -239,7 +239,7 @@ def analyze_token(tg, chat, ca, top_n=8):
         tg_send(tg["token"], chat, f"🧵 <b>TRACE RESULT</b>\n{detail}\n{verdict}")
     except Exception as e:
         tg_send(tg["token"], chat, f"🧵 trace failed: {e}")
-    send_trade_panel(tg, chat, ca)
+    trade_panel_msg(ca)
 
 
 def mirror_wallet(tg, chat, wallet):
@@ -797,6 +797,59 @@ def handle_command(tg, chat, text, state):
         tg_send(tg["token"], chat, "🤔 not a command. Send a Solana CA or /help")
 
 
+def trade_panel_msg(ca):
+    """Standalone trade panel sender used by analyze_token (module-level)."""
+    try:
+        from trading_bot import wallet_exists, load_wallet, sol_balance
+        cfg_t = (load(CFG_PATH, {}) or {}).get("trading", {})
+        chat = ((load(CFG_PATH, {}) or {}).get("telegram") or {}).get("chat_id")
+        tg = load(CFG_PATH, {}).get("telegram") or {}
+        if not chat:
+            return
+        if not wallet_exists():
+            tg_buttons(tg["token"], chat,
+                    "⚡ <b>TRADE PANEL</b> — no wallet yet.",
+                    [[("🔧 Setup Wallet", "wallet:setup")]])
+            return
+        _, pub = load_wallet()
+        sol = sol_balance(pub)
+        if cfg_t.get("autobuy") and sol >= float(cfg_t.get("preset_sol", 0.05)) + 0.02:
+            preset = float(cfg_t.get("preset_sol", 0.05))
+            tg_send(tg["token"], chat, f"⏳ auto-buying {preset} SOL of <code>{ca[:8]}..</code> ...")
+            from trading_bot import do_buy, record_buy
+            sig, err = do_buy(ca, preset)
+            if err:
+                tg_send(tg["token"], chat, f"❌ auto-buy failed: {err}")
+            else:
+                try:
+                    dd = get_json(f"https://api.dexscreener.com/latest/dex/tokens/{ca}")
+                    best = max(dd.get("pairs") or [], key=lambda x:(x.get('liquidity') or {}).get('usd',0))
+                    sym = (best.get('baseToken') or {}).get('symbol','?')
+                except Exception:
+                    sym = '?'
+                record_buy(ca, sym, preset, 0)
+                tg_send(tg["token"], chat,
+                        f"✅ <b>AUTO-BOUGHT</b> {preset} SOL of {sym}\n"
+                        f"tx: https://solscan.io/tx/{sig}\n/positions for PnL")
+            return
+        if sol < 0.06:
+            tg_buttons(tg["token"], chat,
+                    f"⚡ <b>TRADE PANEL</b> — <code>{pub[:8]}..</code>\n💰 {sol:.3f} SOL — fund this address, then tap Buy.",
+                    [[("🟢 Buy 0.05", f"buy:0.05:{ca}"), ("🟢 Buy 0.1", f"buy:0.1:{ca}"), ("🟢 Buy 0.25", f"buy:0.25:{ca}")],
+                     [("🔧 /balance", "balance:check")]])
+            return
+        tg_buttons(tg["token"], chat,
+                f"⚡ <b>TRADE PANEL</b> — <code>{pub[:8]}..</code> ({sol:.3f} SOL)\nTap a button — the bot signs and executes instantly.",
+                [[("🟢 Buy 0.05", f"buy:0.05:{ca}"), ("🟢 Buy 0.1", f"buy:0.1:{ca}"), ("🟢 Buy 0.25", f"buy:0.25:{ca}")],
+                 [("🔴 Sell 25%", f"sell:25:{ca}"), ("🔴 Sell 50%", f"sell:50:{ca}"), ("🔴 Sell 100%", f"sell:100:{ca}")]])
+    except Exception as e:
+        try:
+            tg_send((load(CFG_PATH, {}).get("telegram") or {}).get("token"),
+                    (load(CFG_PATH, {}).get("telegram") or {}).get("chat_id"),
+                    f"trade panel error: {e}")
+        except Exception:
+            pass
+
 def tg_buttons(token, chat, text, buttons, reply_to=None):
     """buttons: list of (label, callback_data)"""
     kb = {"inline_keyboard": [[{"text": l, "callback_data": c} for (l, c) in row]
@@ -1218,9 +1271,9 @@ def radar_loop(tg, chat):
                 info = summarize_transfer(tx_details(s["signature"]))
                 if not info or info["err"]: continue
                 if typ == "funder":
-                    fundings = [d for k, d in info["deltas"] if d < -w.get("min_sol_out", 0.5) and k == addr]
+                    fundings = [d for k, d in info["deltas"] if d < -w.get("min_sol_out", 0.1) and k == addr]
                     if not fundings: continue
-                    recips = [(k, d) for k, d in info["deltas"] if d > w.get("min_sol_out", 0.5) and k != addr]
+                    recips = [(k, d) for k, d in info["deltas"] if d > w.get("min_sol_out", 0.1) and k != addr]
                     for rk, rd in recips[:4]:
                         is_new = rk not in known_children.get(addr, {})
                         known_children.setdefault(addr, {})[rk] = time.strftime("%H:%M", time.gmtime(s.get("blockTime", 0)))
@@ -1237,7 +1290,7 @@ def radar_loop(tg, chat):
                     for (owner, mint, delta) in info.get("token_moves", []):
                         if owner == addr and abs(delta) > 0:
                             side = "BOUGHT" if delta > 0 else "SOLD"
-                            tok_info = f"{side} {abs(delta)/1e6:.1f}M of {mint[:6]}..{mint[-4:]}"
+                            tok_info = f"{side} {abs(delta)/1e6:.1f}M\nCA: <code>{mint}</code>"
                             break
                     for k, d in info["deltas"]:
                         if k == addr and abs(d) >= w.get("min_sol_out", 1.0):
@@ -1250,6 +1303,48 @@ def radar_loop(tg, chat):
                                     f"https://solscan.io/tx/{sig_full}")
                             print(f"alert: {w['label']} {tag} {d:+.2f} {tok_info}")
             time.sleep(1.5)
+
+        # --- spider children: poll for buys (pre-positioning signal) ---
+        # a funder's children (from state + config watch entries) get polled too:
+        # when one of them swaps into a token, ping with the full CA for scanning.
+        st = load(STATE_PATH, {}) or {}
+        known_children.update(st.get("known_children", {}))
+        child_of = {}
+        for w in cfg.get("watch", []):
+            if w.get("muted"): continue
+            if w.get("type") == "funder":
+                for cw in known_children.get(w["address"], {}):
+                    child_of[cw] = w["label"]
+            elif w.get("child_of"):
+                child_of[w["address"]] = w.get("label", "child")
+        for cw, parent in list(child_of.items())[:10]:
+            res = rpc("getSignaturesForAddress", [cw, {"limit": 8}])
+            if not res: continue
+            cseen = seen.setdefault("child:" + cw, {})
+            fresh_c = [s for s in res if not s.get("err") and s["signature"] not in cseen]
+            for s in res:
+                cseen[s["signature"]] = s.get("blockTime") or 0
+            if len(cseen) > 200:
+                seen["child:" + cw] = dict(sorted(cseen.items(), key=lambda kv: -kv[1])[:100])
+            for s in fresh_c[:3]:
+                info = summarize_transfer(tx_details(s["signature"]))
+                if not info or info["err"]: continue
+                for k, d in info["deltas"]:
+                    if k == cw and d <= -0.05:
+                        ca_line = ""
+                        for (owner, mint, delta) in info.get("token_moves", []):
+                            if owner == cw and delta > 0:
+                                ca_line = f"\nCA: <code>{mint}</code>  (send it here to scan)"
+                                break
+                        tg_send(tg["token"], chat,
+                                f"🕸️ <b>SPIDER CHILD BUY</b> — child of {parent}\n"
+                                f"wallet <code>{cw[:8]}..{cw[-6:]}</code> moved {d:+.2f} SOL"
+                                f"{ca_line}\n"
+                                f"https://solscan.io/tx/{s['signature']}")
+                        print(f"alert: child buy {cw[:8]}.. {d:+.2f}")
+                        break
+            time.sleep(1.0)
+
         if time.time() - last_heartbeat > 20 * 3600:
             last_heartbeat = time.time()
             tg_send(tg["token"], chat, f"💓 radar alive — {len(cfg.get('watch', []))} watched, "
