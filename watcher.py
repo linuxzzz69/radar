@@ -1377,8 +1377,15 @@ def execute_buy(tg, chat, ca, amt):
         return False
 
 
+_sellall_state = {"busy": False}
+
 def sell_all_positions(tg, chat):
-    """Sell EVERY open position at market. One-shot dump."""
+    """Sell EVERY open position at market. One dump at a time — parallel dumps
+    stack attempts, corrupt the totals, and double-tap the same pools."""
+    if _sellall_state["busy"]:
+        tg_send(tg["token"], chat, "💰 SELL ALL already running — let the current dump finish (each sell confirms on-chain, it takes a few seconds)")
+        return
+    _sellall_state["busy"] = True
     try:
         from trading_bot import (reconcile_positions, load_positions, do_sell, record_sell,
                                  load_wallet, sol_balance as _sb, clear_rule)
@@ -1403,7 +1410,8 @@ def sell_all_positions(tg, chat):
                 record_sell(mint, 100)
                 # position gone: clear its sell-side rules so the engine doesn't retry ghosts
                 clear_rule(mint, "sl", "tp", "tp_sell", "trail",
-                           "sell_limit", "sell_limit_pct", "sell_limit_att", "sell_limit_mc")
+                           "sell_limit", "sell_limit_pct", "sell_limit_att", "sell_limit_mc",
+                           "sell_limit_card")
                 sold.append(sym)
                 tg_send(tg["token"], chat,
                         f"✅ <b>SOLD 100%</b> {esc(sym)}\ntx: https://solscan.io/tx/{sig}")
@@ -1419,6 +1427,8 @@ def sell_all_positions(tg, chat):
         tg_send(tg["token"], chat, sumtxt)
     except Exception as e:
         tg_send(tg["token"], chat, f"sell all error: {e}")
+    finally:
+        _sellall_state["busy"] = False
 
 
 def positions_view(tg, chat):
