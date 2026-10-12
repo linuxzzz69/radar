@@ -810,7 +810,7 @@ def handle_command(tg, chat, text, state):
             tg_send(tg["token"], chat,
                     "usage: /limitsell <CA> <price> [pct]\n"
                     "price accepts gmgn notation: 0.0₅134 = 0.00000134")
-    elif text == "/rules" or text in ("/tp", "/sl", "/trail"):
+    elif text == "/rules" or text in ("/tp", "/sl", "/trail", "/limitsell", "/limitbuy"):
         try:
             from trading_bot import load_sltp, load_positions
             d = load_sltp() or {}
