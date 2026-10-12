@@ -341,9 +341,12 @@ def reconcile_positions():
                     continue
         d = load_positions()
         added = []
+        dirty = False
         for mint, ui in mints.items():
             p = d.get(mint)
-            if not p or p.get("tokens", 0) <= 0:
+            needs_add = not p or p.get("tokens", 0) <= 0
+            needs_sym = (not needs_add) and p.get("symbol", "?") == "?"
+            if needs_add or needs_sym:
                 sym = (p or {}).get("symbol") or "?"
                 if sym == "?":
                     try:
@@ -353,11 +356,13 @@ def reconcile_positions():
                         sym = ((best.get("baseToken") or {}).get("symbol") or "?") if best else "?"
                     except Exception:
                         sym = "?"
-                d[mint] = {"symbol": sym,
-                           "sol_in": (p or {}).get("sol_in", 0.0),
-                           "tokens": ui}
-                added.append(mint)
-        if added:
+                old_sol_in = (p or {}).get("sol_in", 0.0)
+                old_tokens = (p or {}).get("tokens", ui) if p else ui
+                d[mint] = {"symbol": sym, "sol_in": old_sol_in, "tokens": old_tokens}
+                dirty = True
+                if needs_add:
+                    added.append(mint)
+        if dirty:
             save_positions(d)
         return added
     except Exception:
@@ -523,8 +528,8 @@ def load(p, default):
 
 def log_trade(action, mint, symbol, sol_amount, sig=None, err=None):
     """Audit trail: every auto-action is logged forever."""
-    d = load(HIST_PATH, {"trades": []})
-    d["trades"].append({
+    d = load(HIST_PATH, {})
+    d.setdefault("trades", []).append({
         "ts": time.time(), "action": action, "mint": mint, "symbol": symbol,
         "sol": sol_amount, "sig": sig, "error": err
     })
