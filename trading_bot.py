@@ -239,9 +239,12 @@ def confirm_tx(sig, timeout=45):
     return None, "unconfirmed"
 
 
-def jup_swap_with_retry(keypair, in_mint, out_mint, amount_raw, retries=5):
-    """Full swap with Jupiter API retry (lite-api flaps), direct-route fallback
-    for oversized txs, and slippage escalation (1.5% -> 5% -> 10%) for fast movers."""
+def jup_swap_with_retry(keypair, in_mint, out_mint, amount_raw, retries=7):
+    """Full swap retry stack:
+    - slippage ladder 1.5% -> 5% -> 10% -> 20% (stale quotes on fast movers)
+    - then a ROUTE FLIP (direct-only, fresh slippage budget) — for tokens mid-migration
+      (bonding curve graduating to pumpswap): program errors 6015-family mean the routed
+      pool is dying, and only a different route fixes that."""
     last = None
     direct = False
     slip_idx = 0
@@ -259,9 +262,18 @@ def jup_swap_with_retry(keypair, in_mint, out_mint, amount_raw, retries=5):
                     # tx landed and FAILED on-chain (funds did NOT move) — safe to retry
                     last = f"tx failed on-chain: {cerr}"
                     s = cerr.lower()
-                    if ("custom" in s or "slippage" in s or "error" in s) and slip_idx < len(SLIP_LADDER) - 1:
-                        slip_idx += 1
+                    if "too large" in s and not direct:
+                        direct = True
+                        slip_idx = 0
                         continue
+                    if ("custom" in s or "slippage" in s or "error" in s):
+                        if slip_idx < len(SLIP_LADDER) - 1:
+                            slip_idx += 1
+                            continue
+                        if not direct:              # slippage exhausted -> flip the route
+                            direct = True
+                            slip_idx = 0
+                            continue
                     return None, last
                 # timeout: tx may still land — never retry (double-buy risk)
                 return sig, (f"submitted but not confirmed yet — check "
@@ -271,20 +283,28 @@ def jup_swap_with_retry(keypair, in_mint, out_mint, amount_raw, retries=5):
             if "too large" in s.lower() and not direct:
                 direct = True
                 continue
-            if ("custom program error" in s or "slippage" in s.lower()
-                    and slip_idx < len(SLIP_LADDER) - 1):
-                slip_idx += 1
-                continue
+            if "custom program error" in s or "slippage" in s.lower():
+                if slip_idx < len(SLIP_LADDER) - 1:
+                    slip_idx += 1
+                    continue
+                if not direct:
+                    direct = True
+                    slip_idx = 0
+                    continue
             return sig, serr
         last = err
         s = str(err)
         if "too large" in s.lower() and not direct:
             direct = True
             continue
-        if ("custom program error" in s or "slippage" in s.lower()
-                and slip_idx < len(SLIP_LADDER) - 1):
-            slip_idx += 1
-            continue
+        if "custom program error" in s or "slippage" in s.lower():
+            if slip_idx < len(SLIP_LADDER) - 1:
+                slip_idx += 1
+                continue
+            if not direct:
+                direct = True
+                slip_idx = 0
+                continue
         if "502" in s or "503" in s or "unavailable" in s.lower():
             time.sleep(3 * (i + 1))
             continue
