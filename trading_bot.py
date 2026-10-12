@@ -129,8 +129,10 @@ def jup_swap_with_retry(keypair, in_mint, out_mint, amount_raw, retries=3):
 def do_buy(out_mint, sol_amount):
     kp, pub = load_wallet()
     bal = sol_balance(pub)
-    if bal < sol_amount + 0.01:
-        return None, f"insufficient SOL: {bal:.3f} (need {sol_amount} + fees)"
+    # rent for output-token ATA ~0.002 + priority-fee headroom ~0.002 + safety
+    fee_buf = 0.005 if sol_amount < 0.05 else 0.01
+    if bal < sol_amount + fee_buf:
+        return None, f"insufficient SOL: {bal:.4f} (need {sol_amount} + ~{fee_buf} fees/rent)"
     return jup_swap_with_retry(kp, SOL_MINT, out_mint, int(sol_amount * 1e9))
 
 def do_sell(mint, pct):

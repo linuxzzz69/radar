@@ -923,10 +923,11 @@ def execute_buy(tg, chat, ca, amt):
             kp2, pub2 = load_wallet()
             bal = _sol_balance(pub2)
             tg_buttons(tg["token"], chat,
-                    f"💰 <b>Fund the wallet to enable trading</b>\n"
+                    f"💰 <b>Wallet too low for this buy</b>\n"
                     f"<code>{pub2}</code>\n"
-                    f"balance: {bal:.4f} SOL — send 0.1-0.2 SOL from your main,\n"
-                    f"or use /buy with a smaller amount. One-time fuel, then one-tap trading.",
+                    f"balance: {bal:.4f} SOL\n"
+                    f"reason: {err}\n"
+                    f"send 0.05+ SOL from your main, or /buy a smaller amount.",
                     [[("🔄 /balance", "balance:check")]])
             return
         if err:
