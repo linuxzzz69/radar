@@ -1251,7 +1251,8 @@ def execute_buy(tg, chat, ca, amt):
         sym = (best.get('baseToken') or {}).get('symbol','?') if best else '?'
         e_mcap = float(best.get("marketCap") or 0) if best else 0
         e_price = float(best.get("priceUsd") or 0) if best else 0
-        entry_line = (f"📈 entry: mcap ${e_mcap/1e3:,.0f}K | price ${e_price:.10g}\n"
+        e_price_str = (best.get("priceUsd") or "") if best else ""
+        entry_line = (f"📈 entry: mcap ${e_mcap/1e3:,.0f}K | price ${e_price_str}\n"
                       if e_mcap else "")
         _, pub_pre = load_wallet()
         bal_pre = _sol_balance(pub_pre)
