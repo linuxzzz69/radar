@@ -18,7 +18,8 @@ import base58
 BASE = os.path.dirname(os.path.abspath(__file__))
 WALLET_PATH = os.path.join(BASE, ".bot_wallet.json")
 UA = {"User-Agent": "Mozilla/5.0", "Content-Type": "application/json"}
-RPC = os.environ.get("RPC_URL", "https://api.mainnet-beta.solana.com")
+RPC = os.environ.get("RPC_URL", "https://solana-rpc.publicnode.com")   # generous limits, primary
+RPC_FALLBACK = os.environ.get("RPC_URL2", "https://api.mainnet-beta.solana.com")
 JUP_QUOTE = "https://lite-api.jup.ag/swap/v1/quote"
 JUP_SWAP = "https://lite-api.jup.ag/swap/v1/swap"
 SOL_MINT = "So11111111111111111111111111111111111111112"
@@ -49,7 +50,7 @@ def load_wallet():
     return Keypair.from_bytes(base58.b58decode(d["secret_b58"])), d["pubkey"]
 
 def sol_balance(pubkey):
-    for url in (RPC, "https://solana-rpc.publicnode.com"):
+    for url in (RPC, RPC_FALLBACK):
         try:
             body = json.dumps({"jsonrpc": "2.0", "id": 1, "method": "getBalance", "params": [pubkey]}).encode()
             r = json.load(urllib.request.urlopen(urllib.request.Request(url, data=body, headers=UA), timeout=20))
@@ -61,7 +62,7 @@ def sol_balance(pubkey):
 def token_balance(pubkey, mint):
     """RAW on-chain amount. 0 = confirmed empty. None = both RPCs failed
     (callers must NOT treat None as 'holds nothing')."""
-    for url in (RPC, "https://solana-rpc.publicnode.com"):
+    for url in (RPC, RPC_FALLBACK):
         try:
             body = json.dumps({"jsonrpc": "2.0", "id": 1, "method": "getTokenAccountsByOwner",
                                "params": [pubkey, {"mint": mint}, {"encoding": "jsonParsed"}]}).encode()
@@ -79,7 +80,7 @@ def token_amount_ui(pubkey, mint):
     """(ui_amount, decimals) as shown in wallets.
     (0, 0) = account checked, genuinely empty.
     (None, None) = both RPCs failed — caller must NOT treat this as 'no position'."""
-    for url in (RPC, "https://solana-rpc.publicnode.com"):
+    for url in (RPC, RPC_FALLBACK):
         try:
             body = json.dumps({"jsonrpc": "2.0", "id": 1, "method": "getTokenAccountsByOwner",
                                "params": [pubkey, {"mint": mint}, {"encoding": "jsonParsed"}]}).encode()
@@ -106,7 +107,30 @@ def jup_price_usd(mint):
     except Exception:
         return 0.0
 
+_CACHE = {}
+
+def _cached(key, ttl, fn):
+    """TTL cache. Serves the stale value on fetch failure instead of crashing
+    callers (a stale price beats no price)."""
+    ent = _CACHE.get(key)
+    now = time.time()
+    if ent and now - ent[0] < ttl:
+        return ent[1]
+    try:
+        val = fn()
+    except Exception:
+        if ent:
+            return ent[1]
+        raise
+    if val:
+        _CACHE[key] = (now, val)
+    return val
+
+
 def token_price_usd(mint):
+    return _cached(f"px:{mint}", 30, lambda: _token_price_usd(mint))
+
+def _token_price_usd(mint):
     """DexScreener best-pair price, Jupiter fallback."""
     try:
         dd = get_json(f"https://api.dexscreener.com/latest/dex/tokens/{mint}")
@@ -119,6 +143,9 @@ def token_price_usd(mint):
     return jup_price_usd(mint)
 
 def sol_price_usd():
+    return _cached("solusd", 30, lambda: _sol_price_usd())
+
+def _sol_price_usd():
     try:
         dd = get_json("https://api.dexscreener.com/latest/dex/tokens/So11111111111111111111111111111111111111112")
         ps = dd.get("pairs") or []
@@ -205,7 +232,7 @@ def sign_and_send(keypair, swap_b64):
     body = json.dumps({"jsonrpc": "2.0", "id": 1, "method": "sendTransaction",
                        "params": [b64mod.b64encode(bytes(signed)).decode(),
                                   {"encoding": "base64", "skipPreflight": False, "maxRetries": 3}]}).encode()
-    for url in [RPC, "https://solana-rpc.publicnode.com"]:
+    for url in [RPC, RPC_FALLBACK]:
         try:
             r = json.load(urllib.request.urlopen(urllib.request.Request(url, data=body, headers=UA), timeout=25))
             if "error" in r:
@@ -221,7 +248,7 @@ def confirm_tx(sig, timeout=45):
     (None, 'unconfirmed') not seen before timeout (do NOT retry those)."""
     deadline = time.time() + timeout
     while time.time() < deadline:
-        for url in (RPC, "https://solana-rpc.publicnode.com"):
+        for url in (RPC, RPC_FALLBACK):
             try:
                 body = json.dumps({"jsonrpc": "2.0", "id": 1, "method": "getSignatureStatuses",
                                    "params": [[sig], {"searchTransactionHistory": True}]}).encode()
@@ -380,7 +407,7 @@ def reconcile_positions():
         mints = {}
         for prog in ("TokenkegQfeZyiNwAJbNbGKPFXCWuBvf9Ss623VQ5DA",   # SPL Token
                      "TokenzQdBNbLqP5VEhdkAS6EPFLC1PHnBqCXEpPxuEb"):  # Token-2022
-            for url in (RPC, "https://solana-rpc.publicnode.com"):
+            for url in (RPC, RPC_FALLBACK):
                 try:
                     body = json.dumps({"jsonrpc": "2.0", "id": 1, "method": "getTokenAccountsByOwner",
                                        "params": [pub, {"programId": prog}, {"encoding": "jsonParsed"}]}).encode()
@@ -658,8 +685,18 @@ def daily_spend():
                 if t.get("ts", 0) > day_ago and t.get("action") == "buy" and not t.get("error"))
     return total
 
-def hardened_buy(mint, symbol, sol_amount, max_daily=0.5):
+def _max_daily():
+    """Daily spend cap from config (trading.max_daily), default 0.5 SOL."""
+    try:
+        t = load(os.path.join(BASE, "watch_config.json"), {}).get("trading", {})
+        return float(t.get("max_daily", 0.5))
+    except Exception:
+        return 0.5
+
+
+def hardened_buy(mint, symbol, sol_amount, max_daily=None):
     """do_buy with all guardrails applied. Returns (sig, err)."""
+    max_daily = max_daily if max_daily is not None else _max_daily()
     if is_denied(mint=mint):
         log_trade("buy_blocked", mint, symbol, sol_amount, err="deny-listed")
         return None, "mint is deny-listed"
@@ -693,8 +730,11 @@ def clear_all_limits():
 
 
 def token_supply(mint):
+    return _cached(f"sup:{mint}", 600, lambda: _token_supply(mint))
+
+def _token_supply(mint):
     """UI supply via RPC (for mcap computation when screener data is missing)."""
-    for url in (RPC, "https://solana-rpc.publicnode.com"):
+    for url in (RPC, RPC_FALLBACK):
         try:
             body = json.dumps({"jsonrpc": "2.0", "id": 1, "method": "getTokenSupply",
                                "params": [mint]}).encode()
@@ -706,6 +746,9 @@ def token_supply(mint):
 
 
 def mcap_usd(mint):
+    return _cached(f"mc:{mint}", 30, lambda: _mcap_usd(mint))
+
+def _mcap_usd(mint):
     """Market cap, three layers: DexScreener marketCap -> FDV field -> price x supply."""
     try:
         dd = get_json(f"https://api.dexscreener.com/latest/dex/tokens/{mint}")
@@ -727,6 +770,79 @@ def mcap_usd(mint):
     except Exception:
         pass
     return 0.0
+
+
+TOKEN_PROGRAMS = ("TokenkegQfeZyiNwAJbNbGKPFXCWuBvf9Ss623VQ5DA",   # SPL Token
+                  "TokenzQdBNbLqP5VEhdkAS6EPFLC1PHnBqCXEpPxuEb")  # Token-2022
+
+def empty_token_accounts(pubkey):
+    """Rent-only token accounts owned by the wallet (uiAmount == 0).
+    Each holds ~0.002 SOL reclaimable via closeAccount."""
+    out = []
+    for prog in TOKEN_PROGRAMS:
+        for url in (RPC, RPC_FALLBACK):
+            try:
+                body = json.dumps({"jsonrpc": "2.0", "id": 1, "method": "getTokenAccountsByOwner",
+                                   "params": [str(pubkey), {"programId": prog},
+                                              {"encoding": "jsonParsed"}]}).encode()
+                r = json.load(urllib.request.urlopen(urllib.request.Request(url, data=body, headers=UA), timeout=20))
+                for a in r.get("result", {}).get("value", []):
+                    info = a["account"]["data"]["parsed"]["info"]
+                    ui = float(info["tokenAmount"].get("uiAmount") or 0)
+                    if ui == 0 and info.get("owner") == str(pubkey):
+                        out.append({"acct": a["pubkey"], "mint": info.get("mint"), "prog": prog})
+                break
+            except Exception:
+                continue
+    return out
+
+
+def build_close_tx(keypair, accounts, batch=10):
+    """Build a legacy tx closing up to `batch` empty token accounts (rent -> wallet).
+    Returns base64 tx or raises. CloseAccount = instruction index 9."""
+    from solders.pubkey import Pubkey
+    from solders.instruction import Instruction, AccountMeta
+    from solders.message import Message
+    from solders.transaction import Transaction
+    from solders.hash import Hash
+    import base64 as _b
+    owner = keypair.pubkey()
+    ixs = []
+    for a in accounts[:batch]:
+        ixs.append(Instruction(
+            Pubkey.from_string(a["prog"]), bytes([9]),
+            [AccountMeta(Pubkey.from_string(a["acct"]), True, False),
+             AccountMeta(owner, True, False),
+             AccountMeta(owner, True, True)]))
+    body = json.dumps({"jsonrpc": "2.0", "id": 1, "method": "getLatestBlockhash"}).encode()
+    r = json.load(urllib.request.urlopen(urllib.request.Request(RPC, data=body, headers=UA), timeout=20))
+    bh = ((r.get("result") or {}).get("value") or {}).get("blockhash")
+    if not bh:
+        raise RuntimeError("no blockhash")
+    msg = Message.new_with_blockhash(ixs, owner, Hash.from_string(bh))
+    tx = Transaction.new_unsigned(msg)
+    tx.sign([keypair], Hash.from_string(bh))
+    return _b.b64encode(bytes(tx)).decode()
+
+
+def sweep_rent_accounts(keypair, max_accounts=40):
+    """Close all empty token accounts in batches. Returns (closable, sigs)."""
+    pub = str(keypair.pubkey())
+    accs = empty_token_accounts(pub)
+    if not accs:
+        return [], []
+    sigs = []
+    for i in range(0, min(len(accs), max_accounts), 10):
+        try:
+            b64 = build_close_tx(keypair, accs[i:i + 10])
+            sig, err = sign_and_send(keypair, b64)
+            if sig:
+                sigs.append(sig)
+            if err and "not confirmed" not in str(err):
+                break
+        except Exception:
+            break
+    return accs, sigs
 
 
 def trade_volume():
