@@ -2256,16 +2256,20 @@ def tg_listener(tg, chat):
         try:
             url = f"https://api.telegram.org/bot{tg['token']}/getUpdates?offset={offset}&timeout=0"
             ups = json.load(urllib.request.urlopen(urllib.request.Request(url), timeout=15)).get("result", [])
+            # Phase 1: mark new updates as processed (atomic, under mutex)
             with _STATE_MUTEX:
                 processed = load(STATE_PATH, {}).get("processed_updates", [])
+                new_updates = []
                 for u in ups:
-                    if u["update_id"] in processed:
-                        continue  # already handled (re-delivered update - skip)
-                    processed.append(u["update_id"])
-                    if len(processed) > 200: processed = processed[-100:]
-                    st2 = load(STATE_PATH, {})
-                    st2["processed_updates"] = processed
-                    save(STATE_PATH, st2)
+                    if u["update_id"] not in processed:
+                        processed.append(u["update_id"])
+                        new_updates.append(u)
+                if len(processed) > 200: processed = processed[-100:]
+                st2 = load(STATE_PATH, {})
+                st2["processed_updates"] = processed
+                save(STATE_PATH, st2)
+            # Phase 2: handle the new updates (outside mutex — can be slow)
+            for u in new_updates:
                 offset = u["update_id"] + 1
                 if "callback_query" in u:
                     cb = u["callback_query"]
@@ -2274,7 +2278,6 @@ def tg_listener(tg, chat):
                     cbid = cb.get("id")
                     if str(cid) == str(chat) and cdata:
                         threading.Thread(target=handle_callback, args=(tg, chat, cbid, cdata), daemon=True).start()
-                    # offset update AFTER dispatch, merged via locked save (no full overwrite)
                     save_offset(u["update_id"] + 1)
                     offset = u["update_id"] + 1
                     continue
