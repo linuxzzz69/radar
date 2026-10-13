@@ -17,7 +17,9 @@ services:
       - ./.trade_history.json:/app/.trade_history.json     # audit log + daily cap
       - ./.denylist.json:/app/.denylist.json               # deny-list
     healthcheck:
-      test: ["CMD-SHELL", "python3 -c \"import urllib.request;urllib.request.urlopen('https://api.telegram.org',timeout=10)\""]
+      # 24/7 watchdog: if no loop has heartbeaten in 5 minutes, kill the process —
+      # restart: always brings a fresh container up (recovers from deadlocks/hangs)
+      test: ["CMD-SHELL", "python3 -c \"import os,time,sys; p='/app/.heartbeat'; (sys.exit(0) if (os.path.exists(p) and time.time()-os.path.getmtime(p)<300) else os.kill(1,9))\""]
       interval: 120s
       timeout: 15s
       retries: 3

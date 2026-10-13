@@ -30,6 +30,66 @@ UA = {"User-Agent": "Mozilla/5.0", "Content-Type": "application/json"}
 BASE58 = re.compile(r"^[1-9A-HJ-NP-Za-km-z]{32,44}$")
 START_TS = time.time()
 
+def radar_gate(ca):
+    """Verdict for auto-buys: (ok, reason). Blocks insider-web / dev-bag /
+    extreme-concentration / unindexed tokens. Manual buys bypass this gate —
+    the buttons are yours; auto-buys are the bot's judgment."""
+    try:
+        rug = rug_summary(ca)
+        dex = dex_summary(ca)
+        if not dex and not rug:
+            return False, ("not indexed yet (seconds old) — pure lottery. "
+                           "Rescan in a minute or buy manually via ✏️ if you want it.")
+        top1 = float((rug or {}).get("top1") or 0)
+        top10 = float((rug or {}).get("top10") or 0)
+        if top1 > 40:
+            return False, f"top holder owns {top1:.0f}% of supply — dev-bag structure"
+        if top10 > 80:
+            return False, f"top10 hold {top10:.0f}% — extreme concentration"
+        try:
+            _, verdict = insider_trace(ca, rug or {}, 6)
+            if "INSIDER WEB" in verdict:
+                return False, f"funding web detected — {verdict}"
+        except Exception:
+            pass  # trace unavailable: not a block, the gate relies on live data only
+        return True, "radar clear"
+    except Exception as e:
+        return True, f"gate data unavailable ({str(e)[:40]}) — proceeding"
+
+
+def auto_buy_gated(tg, chat, ca, amt, cfg_t):
+    """Auto-buy WITH the radar gate: scan first, fill only if the radar approves."""
+    try:
+        tg_send(tg["token"], chat,
+                f"🤖 auto-buy triggered for <code>{ca[:8]}..</code> — checking the radar first...")
+        ok, reason = radar_gate(ca)
+        if not ok:
+            tg_send(tg["token"], chat,
+                    f"🤖 <b>auto-buy SKIPPED</b>: {reason}")
+            return
+        bought = execute_buy(tg, chat, ca, amt)
+        if bought and cfg_t.get("autosell_on"):
+            mult = float(cfg_t.get("autosell_mult", 2))
+            spct = int(cfg_t.get("autosell_pct", 50))
+            from trading_bot import set_rule
+            set_rule(ca, "tp", (mult - 1) * 100, None if spct >= 100 else spct)
+            tg_send(tg["token"], chat,
+                    f"🎯 <b>auto-armed</b>: TP at {mult:g}x — sells {spct}%"
+                    + (", rest rides" if spct < 100 else "")
+                    + " (60s engine watches it)")
+    except Exception as e:
+        tg_send(tg["token"], chat, f"auto-buy error: {e}")
+
+
+def heartbeat():
+    """24/7 watchdog signal: each loop touches this file. If no loop runs for
+    5+ minutes, the docker healthcheck kills the process and restart:always
+    brings up a fresh container."""
+    try:
+        open(os.path.join(os.path.dirname(os.path.abspath(__file__)), ".heartbeat"), "w").close()
+    except Exception:
+        pass
+
 def load(p, default):
     if os.path.exists(p):
         try:
@@ -196,7 +256,7 @@ def insider_trace(ca, rug, top_n=8):
         if not owner: continue
         fp, _ = IR.funder_of(owner)
         results.append({"owner": owner, "pct": h["pct"], "funder": fp})
-        time.sleep(0.4)
+        time.sleep(0.12)
     byf = defaultdict(list)
     for r in results:
         if r["funder"] and r["funder"] != r["owner"]:
@@ -627,6 +687,7 @@ def handle_command(tg, chat, text, state):
                 "/cancelall - cancel ALL limit buys/sells at once\n"
                 "/sellall - dump every open position at market NOW\n"
                 "/trades - journal: every buy/sell with mcaps, prices, PnL\n"
+                "/sweep - reclaim SOL from dead token accounts (rent recovery)\n"
                 "/positions - PnL overview\n"
                 "/smart <CA> - find realized-PnL wallets\n"
                 "/pnl <CA> - position audit (smart money status)\n"
@@ -701,13 +762,20 @@ def handle_command(tg, chat, text, state):
     elif text.startswith("/settings"):
         cfg2 = load(CFG_PATH, {})
         t = cfg2.get("trading", {})
+        try:
+            hb_age = time.time() - os.path.getmtime(os.path.join(os.path.dirname(os.path.abspath(__file__)), ".heartbeat"))
+            hb = f"{hb_age:.0f}s ago" if hb_age < 300 else "⚠️ STALE"
+        except Exception:
+            hb = "n/a"
         tg_send(tg["token"], chat,
                 f"⚙️ <b>Trading settings</b>\n"
                 f"route: Jupiter lite-api (0 platform fee)\n"
-                f"auto-buy on CA: {'ON' if t.get('autobuy') else 'OFF'}\n"
-                f"buy preset: {t.get('preset_sol', 0.05)} SOL\n"
-                f"slippage ladder: 1.5% → 5% → 10%\n"
+                f"auto-buy: {'ON — ' + str(t.get('preset_sol', 0.005)) + ' SOL per CA (radar-gated)' if t.get('autobuy') else 'OFF'}\n"
+                f"auto-sell: {'ON — TP ' + str(t.get('autosell_mult', 2)) + 'x, sell ' + str(t.get('autosell_pct', 50)) + '%' if t.get('autosell_on') else 'OFF'}\n"
+                f"slippage ladder: 1.5% → 5% → 10% → 20% + route flip\n"
                 f"priority fee: {t.get('priority', 'medium')} (cap {t.get('max_priority_lamports', 300000)} lamports)\n"
+                f"daily spend cap: {t.get('max_daily', 0.5)} SOL\n"
+                f"💓 watchdog heartbeat: {hb}\n"
                 f"(edit watch_config.json 'trading' block on the VPS — picked up live, no restart)")
     elif text.startswith("/pnl "):
         try:
@@ -976,6 +1044,8 @@ def handle_command(tg, chat, text, state):
                 tg_send(tg["token"], chat, out)
         except Exception as e:
             tg_send(tg["token"], chat, f"rules error: {e}")
+    elif text == "/sweep":
+        threading.Thread(target=sweep_rent, args=(tg, chat), daemon=True).start()
     elif text == "/trades":
         try:
             from trading_bot import trade_journal
@@ -1209,24 +1279,11 @@ def trade_panel_msg(ca):
             return
         _, pub = load_wallet()
         sol = sol_balance(pub)
-        if cfg_t.get("autobuy") and sol >= float(cfg_t.get("preset_sol", 0.05)) + 0.02:
-            preset = float(cfg_t.get("preset_sol", 0.05))
-            tg_send(tg["token"], chat, f"⏳ auto-buying {preset} SOL of <code>{ca[:8]}..</code> ...")
-            from trading_bot import do_buy, record_buy
-            sig, err = do_buy(ca, preset)
-            if err:
-                tg_send(tg["token"], chat, f"❌ auto-buy failed: {err}")
-            else:
-                try:
-                    dd = get_json(f"https://api.dexscreener.com/latest/dex/tokens/{ca}")
-                    best = max(dd.get("pairs") or [], key=lambda x:(x.get('liquidity') or {}).get('usd',0))
-                    sym = (best.get('baseToken') or {}).get('symbol','?')
-                except Exception:
-                    sym = '?'
-                record_buy(ca, sym, preset, 0)
-                tg_send(tg["token"], chat,
-                        f"✅ <b>AUTO-BOUGHT</b> {preset} SOL of {sym}\n"
-                        f"tx: https://solscan.io/tx/{sig}\n/positions for PnL")
+        if cfg_t.get("autobuy") and sol >= float(cfg_t.get("preset_sol", 0.005)) + 0.005:
+            preset = float(cfg_t.get("preset_sol", 0.005))
+            tg_send(tg["token"], chat, f"🤖 <b>auto-buying</b> {preset} SOL of <code>{ca[:8]}..</code> ...")
+            # full pipeline + radar gate: auto-buys only fill when the radar approves
+            threading.Thread(target=auto_buy_gated, args=(tg, chat, ca, preset, cfg_t), daemon=True).start()
             return
         if sol < 0.011:
             holding = 0
@@ -1283,9 +1340,10 @@ def tg_answer_callback(token, cb_id, text=None):
 
 
 def save_offset(new_offset):
-    st = load(STATE_PATH, {})
-    st["tg_offset"] = new_offset
-    save(STATE_PATH, st)
+    with _STATE_MUTEX:
+        st = load(STATE_PATH, {})
+        st["tg_offset"] = new_offset
+        save(STATE_PATH, st)
 
 def parse_amount_usd(s):
     """USD amounts with K/M suffixes: 40K -> 40000, 1.5M -> 1500000, 250000 -> 250000."""
@@ -1459,6 +1517,32 @@ def execute_buy(tg, chat, ca, amt):
 
 
 _sellall_state = {"busy": False}
+
+def sweep_rent(tg, chat):
+    """Reclaim rent from dead token accounts (left after 100% sells)."""
+    try:
+        from trading_bot import (load_wallet, sol_balance as _sb,
+                                 empty_token_accounts, sweep_rent_accounts, load_wallet as _lw2)
+        if not hasattr(load_wallet(), "__len__"):  # pragma: no cover
+            pass
+        tg_send(tg["token"], chat, "🧹 sweeping dead token accounts (reclaiming rent)...")
+        kp, pub = load_wallet()
+        bal_pre = _sb(pub)
+        accs, sigs = sweep_rent_accounts(kp)
+        if not accs:
+            tg_send(tg["token"], chat, "🧹 no dead token accounts — nothing to reclaim (wallet is clean)")
+            return
+        time.sleep(6)
+        bal_post = wait_balance_settle(pub, bal_pre, tries=3, delay=3)
+        net = bal_post - bal_pre
+        sp = best_price_usd("So11111111111111111111111111111111111111112") or 0
+        tg_send(tg["token"], chat,
+                f"🧹 <b>SWEEP DONE</b> — {len(accs)} dead account(s), {len(sigs)} batch tx(s)\n"
+                f"⛽ rent reclaimed: +{max(0, net):.4f} SOL (~${max(0, net) * sp:.2f})\n"
+                f"💰 balance: {bal_post:.4f} SOL")
+    except Exception as e:
+        tg_send(tg["token"], chat, f"sweep error: {e}")
+
 
 def sell_all_positions(tg, chat):
     """Sell EVERY open position at market. One dump at a time — parallel dumps
@@ -1787,6 +1871,7 @@ def tg_edit(token, chat, msg_id, text):
 def pnl_poll_loop(tg, chat):
     """Every 60s: edit PnL cards in place + check SL/TP rules."""
     while True:
+        heartbeat()
         time.sleep(60)
         try:
             from trading_bot import load_positions, position_pnl, load_card, get_rules, load_wallet, do_sell, sol_balance
@@ -2161,18 +2246,20 @@ def best_price_usd(mint):
 def tg_listener(tg, chat):
     offset = load(STATE_PATH, {}).get("tg_offset", 0)
     while True:
+        heartbeat()
         try:
             url = f"https://api.telegram.org/bot{tg['token']}/getUpdates?offset={offset}&timeout=0"
             ups = json.load(urllib.request.urlopen(urllib.request.Request(url), timeout=15)).get("result", [])
-            processed = load(STATE_PATH, {}).get("processed_updates", [])
-            for u in ups:
-                if u["update_id"] in processed:
-                    continue  # already handled (re-delivered update - skip)
-                processed.append(u["update_id"])
-                if len(processed) > 200: processed = processed[-100:]
-                st2 = load(STATE_PATH, {})
-                st2["processed_updates"] = processed
-                save(STATE_PATH, st2)
+            with _STATE_MUTEX:
+                processed = load(STATE_PATH, {}).get("processed_updates", [])
+                for u in ups:
+                    if u["update_id"] in processed:
+                        continue  # already handled (re-delivered update - skip)
+                    processed.append(u["update_id"])
+                    if len(processed) > 200: processed = processed[-100:]
+                    st2 = load(STATE_PATH, {})
+                    st2["processed_updates"] = processed
+                    save(STATE_PATH, st2)
                 offset = u["update_id"] + 1
                 if "callback_query" in u:
                     cb = u["callback_query"]
@@ -2220,6 +2307,7 @@ def radar_loop(tg, chat):
 
 
     while True:
+        heartbeat()
         cfg = load(CFG_PATH, cfg)   # live-reload config (picks up /add //remove)
         for w in cfg.get("watch", []):
             if w.get("muted"): continue
