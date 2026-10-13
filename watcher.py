@@ -1877,8 +1877,9 @@ def tg_edit(token, chat, msg_id, text):
     try:
         urllib.request.urlopen(urllib.request.Request(
             f"https://api.telegram.org/bot{token}/editMessageText", data=data), timeout=15)
+        return True
     except Exception:
-        pass  # message unchanged or too old - fine
+        return False  # message unchanged or too old — caller decides whether to send fresh
 
 def pnl_poll_loop(tg, chat):
     """Every 60s: edit PnL cards in place + check SL/TP rules."""
