@@ -748,19 +748,7 @@ def handle_command(tg, chat, text, state):
     elif text.startswith("/volume"):
         threading.Thread(target=wallet_volume_cmd, args=(tg, chat, text), daemon=True).start()
     elif text.startswith("/positions"):
-        try:
-            from trading_bot import positions_overview, load_wallet, reconcile_positions
-            reconcile_positions()  # chain is truth
-            lines, net = positions_overview()
-            _, pub = load_wallet()
-            if not lines:
-                tg_send(tg["token"], chat, f"📍 <code>{pub[:8]}..</code>\nno open positions. Send a CA to buy.")
-                return
-            # per-position sell buttons (positions_view carries them)
-            positions_view(tg, chat)
-            tg_send(tg["token"], chat, f"📊 net across positions: {net:.4f} SOL")
-        except Exception as e:
-            tg_send(tg["token"], chat, f"positions error: {e}")
+        positions_view(tg, chat)  # single live message, edits in place on refresh
     elif text.startswith("/settings"):
         cfg2 = load(CFG_PATH, {})
         t = cfg2.get("trading", {})
@@ -1599,7 +1587,8 @@ def sell_all_positions(tg, chat):
 
 
 def positions_view(tg, chat):
-    """All open positions with PnL detail + per-position sell buttons."""
+    """All open positions with PnL detail + per-position sell buttons.
+    Edits the SAME message in place when refreshed (no message spam)."""
     try:
         from trading_bot import load_positions, position_pnl
         reconcile = __import__("trading_bot").reconcile_positions
@@ -1621,7 +1610,7 @@ def positions_view(tg, chat):
             try:
                 ddm = get_json(f"https://api.dexscreener.com/latest/dex/tokens/{mint}")
                 bpp = ddm.get("pairs") or []
-                bestm = max(bpp, key=lambda x: (x.get("liquidity") or {}).get("usd", 0)) if bpp else None
+                bestm = max(bpp, key=lambda x: (x.get("liquidity") or {}).get("usd") or 0) if bpp else None
                 mcap_now = round((bestm.get("marketCap") or 0) / 1e3) if bestm else 0
             except Exception:
                 pass
@@ -1633,15 +1622,42 @@ def positions_view(tg, chat):
                          (f"🔴 {s} 50%", f"sell:50:{mint}"),
                          (f"🔴 {s} 100%", f"sell:100:{mint}")])
             if len(rows) >= 8: break
-        if not rows:
-            tg_send(tg["token"], chat, "💼 no open positions")
-            return
-        rows.append([("💰 Sell ALL (market)", "sellall:x:x")])
-        tg_buttons(tg["token"], chat,
-                   "💼 <b>Positions</b>\n" + "\n".join(lines) + "\nSell any position:",
-                   rows)
+
+        # empty book: still edit in place (or send if no prior message)
+        body = "\n".join(lines) if lines else "(no open positions — send a CA to buy)"
+        if rows:
+            rows.append([("💰 Sell ALL (market)", "sellall:x:x")])
+        rows.append([("🔄 Refresh", "posview:x:x"), ("📊 /trades", "tradesbtn:x:x")])
+        text = f"💼 <b>Positions</b>\n{body}"
+
+        # edit in place if we have a stored message, else send new and store
+        st = load(STATE_PATH, {})
+        pos_msg = st.get("positions_msg")
+        if pos_msg and pos_msg.get("chat") == chat:
+            if tg_edit(tg["token"], chat, pos_msg["msg"], text):
+                # edit succeeded — update the buttons too
+                _edit_markup(tg["token"], chat, pos_msg["msg"], rows)
+                return
+        # send fresh and store the id
+        mid = tg_buttons(tg["token"], chat, text, rows)
+        if mid:
+            st = load(STATE_PATH, {})
+            st["positions_msg"] = {"chat": chat, "msg": mid}
+            save(STATE_PATH, st)
     except Exception as e:
         tg_send(tg["token"], chat, f"positions error: {e}")
+
+
+def _edit_markup(token, chat, msg_id, rows):
+    """Update inline buttons on an existing message without changing text."""
+    kb = {"inline_keyboard": [[{"text": l, "callback_data": c} for (l, c) in row] for row in rows]}
+    data = urllib.parse.urlencode({"chat_id": chat, "message_id": msg_id,
+                                   "reply_markup": json.dumps(kb)}).encode()
+    try:
+        urllib.request.urlopen(urllib.request.Request(
+            f"https://api.telegram.org/bot{token}/editMessageReplyMarkup", data=data), timeout=15)
+    except Exception:
+        pass
 
 
 def handle_callback(tg, chat, cb_id, data):
@@ -1695,8 +1711,11 @@ def handle_callback(tg, chat, cb_id, data):
         if action == "sellall":
             threading.Thread(target=sell_all_positions, args=(tg, chat), daemon=True).start()
             return
-        if action == "posview":
-            positions_view(tg, chat)
+        if action == "posview" or action == "tradesbtn":
+            if action == "tradesbtn":
+                handle_command(tg, chat, "/trades", None)
+            else:
+                positions_view(tg, chat)  # edits in place
             return
         if action == "limitcancel":
             from trading_bot import clear_rule, clear_all_limits
