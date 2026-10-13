@@ -1489,17 +1489,8 @@ def execute_buy(tg, chat, ca, amt):
                  [("🎯 TP 2x — sell 50%", f"tpset:100:50:{ca}"),
                   ("🎯 TP 2x — sell 100%", f"tpset:100:100:{ca}"),
                   ("🛑 SL -30%", f"slset:-30:x:{ca}")]])
-        # make this receipt a LIVE card: pnl_poll edits it every 60s with real PnL + mcap
-        try:
-            from trading_bot import save_card
-            sent_msg = tg_buttons(tg["token"], chat, f"📊 <b>{sym}</b> LIVE\n"
-                                f"entry: mcap ${e_mcap/1e3:,.0f}K\n"
-                                f"position updating every 60s...",
-                                [[("🔄 Rescan", f"rescan:{ca}"), ("💼 Positions", "posview:x:x")]])
-            if sent_msg:
-                save_card(ca, chat, sent_msg)
-        except Exception:
-            pass
+        # NO separate live card — the /positions view (manual refresh) is the
+        # single source of truth for position tracking
         return True
     except Exception as e:
         tg_send(tg["token"], chat, f"buy error: {e}")
@@ -1919,13 +1910,8 @@ def pnl_poll_loop(tg, chat):
                 sp_l = _sp_l() or 0
                 pnl_usd = pnl_sol * sp_l
                 card = load_card(mint)
-                if card:
-                    e_line = f" | entry mcap ${entry_mcap_k:,.0f}K" if entry_mcap_k else ""
-                    tg_edit(tg["token"], card["chat"], card["msg"],
-                            f"📊 <b>{sym}</b> LIVE\n"
-                            f"mcap: ${mcap_k:,.0f}K{e_line} | value: ${usd:.2f}\n"
-                            f"PnL: {pnl_pct:+.1f}% | {pnl_sol:+.4f} SOL ({pnl_usd:+.2f}$)\n"
-                            f"updates every 60s")
+                # NO auto-edit of position cards — user refreshes via /positions
+                # (the SL/TP/trail engine still runs silently below)
                 # SL/TP check
                 rules = get_rules(mint)
                 do_sell_now = False
