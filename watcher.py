@@ -90,6 +90,8 @@ def heartbeat():
     except Exception:
         pass
 
+_STATE_MUTEX = __import__("threading").Lock()
+
 def load(p, default):
     if os.path.exists(p):
         try:
