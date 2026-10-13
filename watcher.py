@@ -748,7 +748,7 @@ def handle_command(tg, chat, text, state):
     elif text.startswith("/volume"):
         threading.Thread(target=wallet_volume_cmd, args=(tg, chat, text), daemon=True).start()
     elif text.startswith("/positions"):
-        positions_view(tg, chat)  # single live message, edits in place on refresh
+        positions_view(tg, chat, force_new=True)  # always a fresh message at the bottom
     elif text.startswith("/settings"):
         cfg2 = load(CFG_PATH, {})
         t = cfg2.get("trading", {})
@@ -1577,9 +1577,10 @@ def sell_all_positions(tg, chat):
         _sellall_state["busy"] = False
 
 
-def positions_view(tg, chat):
-    """All open positions with PnL detail + per-position sell buttons.
-    Edits the SAME message in place when refreshed (no message spam)."""
+def positions_view(tg, chat, force_new=False):
+    """All open positions with PnL + sell buttons.
+    force_new=True (from /positions command): sends a fresh message at the bottom.
+    force_new=False (from Refresh button): edits the stored message in place."""
     try:
         from trading_bot import load_positions, position_pnl
         reconcile = __import__("trading_bot").reconcile_positions
@@ -1587,7 +1588,6 @@ def positions_view(tg, chat):
         d = load_positions()
         lines, rows = [], []
         for mint, p in list(d.items()):
-            # position_pnl resolves post-buy 0-token records from the chain
             r = position_pnl(mint)
             if not r: continue
             sym, val_sol, pnl_sol, pnl_pct, tokens = r
@@ -1614,22 +1614,21 @@ def positions_view(tg, chat):
                          (f"🔴 {s} 100%", f"sell:100:{mint}")])
             if len(rows) >= 8: break
 
-        # empty book: still edit in place (or send if no prior message)
         body = "\n".join(lines) if lines else "(no open positions — send a CA to buy)"
         if rows:
             rows.append([("💰 Sell ALL (market)", "sellall:x:x")])
         rows.append([("🔄 Refresh", "posview:x:x"), ("📊 /trades", "tradesbtn:x:x")])
         text = f"💼 <b>Positions</b>\n{body}"
 
-        # edit in place if we have a stored message, else send new and store
-        st = load(STATE_PATH, {})
-        pos_msg = st.get("positions_msg")
-        if pos_msg and pos_msg.get("chat") == chat:
-            if tg_edit(tg["token"], chat, pos_msg["msg"], text):
-                # edit succeeded — update the buttons too
-                _edit_markup(tg["token"], chat, pos_msg["msg"], rows)
-                return
-        # send fresh and store the id
+        if not force_new:
+            # Refresh button: edit the stored message in place
+            st = load(STATE_PATH, {})
+            pos_msg = st.get("positions_msg")
+            if pos_msg and pos_msg.get("chat") == chat:
+                if tg_edit(tg["token"], chat, pos_msg["msg"], text):
+                    _edit_markup(tg["token"], chat, pos_msg["msg"], rows)
+                    return
+        # /positions command (or edit failed): send fresh at the bottom + store
         mid = tg_buttons(tg["token"], chat, text, rows)
         if mid:
             st = load(STATE_PATH, {})
@@ -1702,12 +1701,11 @@ def handle_callback(tg, chat, cb_id, data):
         if action == "sellall":
             threading.Thread(target=sell_all_positions, args=(tg, chat), daemon=True).start()
             return
-        if action == "posview" or action == "tradesbtn":
-            if action == "tradesbtn":
-                handle_command(tg, chat, "/trades", None)
-            else:
-                positions_view(tg, chat)  # edits in place
+        if action == "tradesbtn":
+            handle_command(tg, chat, "/trades", None)
             return
+        if action == "posview":
+            positions_view(tg, chat, force_new=False)  # Refresh button: edit in place
         if action == "limitcancel":
             from trading_bot import clear_rule, clear_all_limits
             if val == "all":
