@@ -264,26 +264,36 @@ def snipe_opensea(slug, key, ratio_threshold, tg):
     if not listings:
         print("no live listings returned (endpoint/key limits) - rarity ranking printed above")
         return ranked
-    floor = min(float(l.get("price", {}).get("current", {}).get("value", 0) or 0) / 1e18
-                for l in listings if l.get("price", {}).get("current"))
-    print(f"live listings: {len(listings)} | floor: {floor:.4f} ETH")
-    by_id = {t["id"]: (scores.get(t["id"], 0), t) for t in tokens}
+    priced = []
+    for l in listings:
+        cur = ((l.get("price") or {}).get("current") or {})
+        try:
+            price = float(cur.get("value", 0) or 0) / (10 ** int(cur.get("decimals", 18) or 18))
+        except Exception:
+            continue
+        ident = None
+        for offer in (((l.get("protocol_data") or {}).get("parameters") or {}).get("offer") or []):
+            if offer.get("itemType") in (2, 3) and offer.get("identifierOrCriteria") is not None:
+                ident = str(int(offer.get("identifierOrCriteria")))
+                break
+        if price > 0 and ident is not None:
+            priced.append((ident, price))
+    if not priced:
+        print("listings returned but none parseable to token ids - rarity ranking printed above")
+        return ranked
+    floor = min(p for _, p in priced)
+    print(f"live listings: {len(listings)} | parsed: {len(priced)} | floor: {floor:.4f} ETH")
     median_score = sorted(scores.values())[len(scores)//2] if scores else 1
     print(f"\nSNIPE TARGETS (rare + priced near floor):")
     hits = []
-    for l in listings:
-        ident = str(l.get("nft_id") or l.get("identifier") or l.get("token_id") or "")
-        price = float((l.get("price") or {}).get("current", {}).get("value", 0) or 0) / 1e18
-        if price <= 0 or not ident:
+    for ident, price in priced:
+        s = scores.get(ident)
+        if s is None:
             continue
-        ent = by_id.get(ident) or by_id.get(str(ident).split("/")[-1])
-        if not ent:
-            continue
-        s, t = ent
         if s > median_score * 1.8 and price < floor * max(1.25, ratio_threshold):
-            line = f"  #{ident} '{t['name'][:30]}' score={s:.1f} price={price:.4f} ETH (floor {floor:.3f})"
-            print(line)
-            hits.append((ident, s, price, t["name"]))
+            nm = next((t["name"] for t in tokens if t["id"] == ident), "")
+            print(f"  #{ident} '{nm[:30]}' score={s:.1f} price={price:.4f} ETH (floor {floor:.3f})")
+            hits.append((ident, s, price, nm))
     if not hits:
         print("  none found this sweep - rerun or widen threshold")
     if tg and hits:
