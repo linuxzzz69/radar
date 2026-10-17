@@ -299,7 +299,46 @@ def snipe_opensea(slug, key, ratio_threshold, tg):
     if tg and hits:
         tg_send(tg, f"🕸 rarity_sniper: {len(hits)} snipe targets in '{slug}' (floor {floor:.3f} ETH):\n" +
                 "\n".join(f"#{h[0]} score {h[1]:.0f} @ {h[2]:.3f} ETH" for h in hits[:5]))
-    return hits
+    return hits, ranked
+
+def watch_opensea(slug, key, ratio_threshold, tg, interval, state_path):
+    """Daemon mode: sweep every `interval` seconds, alert only NEW targets."""
+    seen = {}
+    if state_path and os.path.exists(state_path):
+        try:
+            seen = json.load(open(state_path))
+        except Exception:
+            seen = {}
+    print(f"WATCH MODE: '{slug}' - sweeping every {interval}s. Ctrl+C to stop.")
+    print("alerts fire only on NEW snipe targets (deduped by token id + price).")
+    sweep = 0
+    while True:
+        sweep += 1
+        ts = time.strftime("%H:%M:%S")
+        try:
+            hits, _ = snipe_opensea(slug, key, ratio_threshold, tg=None)
+        except Exception as e:
+            print(f"[{ts}] sweep {sweep} error: {str(e)[:100]}")
+            time.sleep(interval); continue
+        fresh = []
+        for ident, s, price, nm in hits:
+            key_ = str(ident)
+            prev = seen.get(key_)
+            if prev is None or abs(prev - price) > 1e-6:
+                fresh.append((ident, s, price, nm))
+            seen[key_] = price
+        if fresh:
+            line = f"🕸 rarity_sniper [{slug}] - {len(fresh)} NEW target(s):"
+            for ident, s, price, nm in fresh[:5]:
+                line += f"\n#{ident} '{nm[:30]}' score {s:.0f} @ {price:.3f} ETH"
+            print(f"[{ts}] sweep {sweep}: " + line.replace("\n", " | "))
+            if tg:
+                tg_send(tg, line)
+        else:
+            print(f"[{ts}] sweep {sweep}: {len(hits)} target(s), no new")
+        if state_path:
+            json.dump(seen, open(state_path, "w"))
+        time.sleep(interval)
 
 # ---------- telegram ----------
 def tg_send(cfg, text):
@@ -326,6 +365,9 @@ def main():
     ap.add_argument("--floor-snipe", action="store_true", help="OS mode: flag rare items near floor")
     ap.add_argument("--threshold", type=float, default=1.25, help="price < floor*threshold AND score > median*1.8")
     ap.add_argument("--tg", action="store_true", help="send hits to Telegram (uses watch_config.json creds)")
+    ap.add_argument("--watch", action="store_true", help="daemon mode: sweep forever, alert new targets only")
+    ap.add_argument("--interval", type=int, default=300, help="seconds between sweeps (watch mode)")
+    ap.add_argument("--state", default="rarity_state.json", help="dedupe state file (watch mode)")
     a = ap.parse_args()
 
     tg = json.load(open(TG_CFG)) if (a.tg and os.path.exists(TG_CFG)) else None
@@ -334,7 +376,10 @@ def main():
         key = os.environ.get("OPENSEA_API_KEY")
         if not key:
             sys.exit("OS mode needs OPENSEA_API_KEY env var (free at docs.opensea.io)")
-        snipe_opensea(a.slug, key, a.threshold, tg)
+        if a.watch:
+            watch_opensea(a.slug, key, a.threshold, tg, a.interval, a.state)
+        else:
+            snipe_opensea(a.slug, key, a.threshold, tg)
     elif a.contract:
         rpcs = get_rpcs(a.rpc)
         scan_onchain(a.contract, rpcs, a.sample, a.start, a.csv or "rarity_ranked.csv")
