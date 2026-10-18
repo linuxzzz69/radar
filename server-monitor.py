@@ -232,16 +232,76 @@ def check_radar_logs():
         pass
 
 
+# ── Command audit monitor ────────────────────────────────────────────
+CMD_LOG = "/var/log/commands_audit.log"
+
+# sensitive commands that trigger Telegram alerts
+SENSITIVE = re.compile(
+    r"^(?:sudo )?(?:rm |kill |shutdown|reboot|halt|poweroff|"
+    r"systemctl |docker |docker-compose |"
+    r"chmod |chown |passwd |useradd |userdel |adduser |deluser |"
+    r"crontab |iptables |ufw |"
+    r"ssh-keygen |curl.*\|.*sh|wget.*\|.*sh|"
+    r"apt |apt-get |pip install|"
+    r"git push|git reset|git checkout|git filter)", re.IGNORECASE)
+
+# commands that are too noisy to alert even though they're "sensitive"
+SKIP = re.compile(r"docker ps|docker logs|docker exec.*grep|docker compose ps")
+
+
+def tail_cmd_log():
+    """Tail the command audit log and alert on sensitive commands."""
+    pos = 0
+    if os.path.exists(CMD_LOG):
+        pos = os.path.getsize(CMD_LOG)
+    while True:
+        try:
+            if not os.path.exists(CMD_LOG):
+                time.sleep(3)
+                continue
+            size = os.path.getsize(CMD_LOG)
+            if size < pos:
+                pos = 0  # log rotated
+            if size > pos:
+                with open(CMD_LOG, "r") as f:
+                    f.seek(pos)
+                    for line in f:
+                        parse_cmd_line(line.strip())
+                pos = size
+        except Exception as e:
+            print(f"cmd log err: {e}", file=sys.stderr)
+        time.sleep(0.5)
+
+
+def parse_cmd_line(line):
+    """Format: timestamp|user|ip|command"""
+    parts = line.split("|", 3)
+    if len(parts) < 4:
+        return
+    ts, user, ip, cmd = parts
+    if not cmd or SKIP.search(cmd):
+        return
+    if SENSITIVE.search(cmd):
+        cmd_short = cmd[:200] if len(cmd) > 200 else cmd
+        ip_disp = ip if ip != "local" else "console"
+        tg(f"⌨️ <b>SENSITIVE CMD</b>\n"
+           f"user: <code>{user}</code>\n"
+           f"ip: <code>{ip_disp}</code>\n"
+           f"cmd: <code>{cmd_short}</code>\n"
+           f"time: {ts}")
+
+
 # ── main ────────────────────────────────────────────────────────────
 def main():
     import threading
     tg("📡 <b>Server Monitor</b> online\n"
        f"host: <code>{os.uname().nodename}</code>\n"
-       f"monitoring: SSH logins, Docker events, system health, radar errors")
+       f"monitoring: SSH logins, Docker events, system health, radar errors, commands")
     threads = [
         threading.Thread(target=tail_auth_log, daemon=True),
         threading.Thread(target=watch_docker_events, daemon=True),
         threading.Thread(target=health_loop, daemon=True),
+        threading.Thread(target=tail_cmd_log, daemon=True),
     ]
     for t in threads:
         t.start()
