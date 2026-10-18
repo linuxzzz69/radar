@@ -1,0 +1,18 @@
+# server-monitor.service — VPS watchdog
+# Place at /etc/systemd/system/server-monitor.service
+# Then: systemctl daemon-reload && systemctl enable --now server-monitor
+
+[Unit]
+Description=Radar Server Monitor (Telegram notifications)
+After=network-online.target
+
+[Service]
+Type=simple
+ExecStart=/usr/bin/python3 /opt/radar/server-monitor.py
+Restart=always
+RestartSec=10
+Environment=SERVER_MON_TOKEN=YOUR_BOT_TOKEN_HERE
+Environment=SERVER_MON_CHAT=YOUR_CHAT_ID_HERE
+
+[Install]
+WantedBy=multi-user.target
