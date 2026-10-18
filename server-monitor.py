@@ -63,9 +63,10 @@ def tg(text):
 # ── SSH login monitor ──────────────────────────────────────────────
 login_pat = re.compile(r"Accepted (password|publickey) for (\S+) from (\S+)")
 fail_pat = re.compile(r"Failed (password|publickey) for (?:invalid user )?(\S+) from (\S+)")
-logout_pat = re.compile(r"session opened for user (\S+)")
+ban_pat = re.compile(r"\[sshd\] Ban (\S+)")
 
-fail_counts = {}  # ip -> (count, first_ts)
+fail_cooldown = {}  # ip -> last alert timestamp (30-min cooldown for raw attempts)
+BAN_COOLDOWN = 1800  # 30 minutes
 
 
 def tail_auth_log():
@@ -105,21 +106,53 @@ def parse_auth_line(line):
            f"method: {method}\n"
            f"time: {now}")
         return
-    # failed login
+    # failed login (cooldown: 1 alert per IP per 30 min)
     m = fail_pat.search(line)
     if m:
         method, user, ip = m.groups()
         ts = time.time()
-        if ip not in fail_counts:
-            fail_counts[ip] = [0, ts]
-        fail_counts[ip][0] += 1
-        if fail_counts[ip][0] >= 3 and ts - fail_counts[ip][1] < 60:
-            tg(f"🚨 <b>BRUTE FORCE</b> — {fail_counts[ip][0]} failed attempts\n"
+        if ip not in fail_cooldown or ts - fail_cooldown[ip] > BAN_COOLDOWN:
+            fail_cooldown[ip] = ts
+            tg(f"🚨 <b>SSH ATTEMPTS</b>\n"
                f"ip: <code>{ip}</code>\n"
                f"last user tried: <code>{user}</code>\n"
-               f"time: {now}")
-            fail_counts[ip] = [0, ts]  # reset after alerting
+               f"time: {now}\n"
+               f"(fail2ban handles the blocking)")
         return
+
+
+# ── fail2ban ban monitor ──────────────────────────────────────────
+FAIL2BAN_LOG = "/var/log/fail2ban.log"
+
+def tail_fail2ban_log():
+    """Watch fail2ban's log for actual ban events."""
+    pos = 0
+    if os.path.exists(FAIL2BAN_LOG):
+        pos = os.path.getsize(FAIL2BAN_LOG)
+    while True:
+        try:
+            if not os.path.exists(FAIL2BAN_LOG):
+                time.sleep(5)
+                continue
+            size = os.path.getsize(FAIL2BAN_LOG)
+            if size < pos:
+                pos = 0
+            if size > pos:
+                with open(FAIL2BAN_LOG, "r") as f:
+                    f.seek(pos)
+                    for line in f:
+                        m = ban_pat.search(line)
+                        if m:
+                            ip = m.group(1)
+                            tg(f"🚫 <b>IP BANNED</b>\n"
+                               f"ip: <code>{ip}</code>\n"
+                               f"service: sshd\n"
+                               f"time: {time.strftime('%H:%M:%S')}\n"
+                               f"(fail2ban auto-blocked after repeated failures)")
+                pos = size
+        except Exception as e:
+            print(f"fail2ban log err: {e}", file=sys.stderr)
+        time.sleep(2)
 
 
 # ── Docker events monitor ───────────────────────────────────────────
@@ -299,6 +332,7 @@ def main():
        f"monitoring: SSH logins, Docker events, system health, radar errors, commands")
     threads = [
         threading.Thread(target=tail_auth_log, daemon=True),
+        threading.Thread(target=tail_fail2ban_log, daemon=True),
         threading.Thread(target=watch_docker_events, daemon=True),
         threading.Thread(target=health_loop, daemon=True),
         threading.Thread(target=tail_cmd_log, daemon=True),
