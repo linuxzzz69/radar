@@ -1,0 +1,19 @@
+FROM python:3.12-slim
+
+# Node 20 for dlmm_fee.js (Meteora DLMM SDK reads)
+RUN apt-get update && apt-get install -y --no-install-recommends \
+    curl ca-certificates \
+    && curl -fsSL https://deb.nodesource.com/setup_20.x | bash - \
+    && apt-get install -y --no-install-recommends nodejs \
+    && rm -rf /var/lib/apt/lists/*
+
+WORKDIR /app
+
+# Node deps: @meteora-ag/dlmm + @solana/web3.js (same versions as ha-service)
+COPY radar-ha/package.json /app/radar-ha/package.json
+RUN cd /app/radar-ha && npm install --omit=dev --no-audit --no-fund
+
+# Code
+COPY toll_watch.py dlmm_fee.js /app/
+
+CMD ["python3", "-u", "toll_watch.py"]

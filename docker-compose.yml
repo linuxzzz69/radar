@@ -55,6 +55,18 @@ services:
     ports:
       - "127.0.0.1:8077:8077"   # host-only, so dbc_scanner/fresh_battery reach it
 
+  # Toll booth seeder alert (toll_watch.py + dlmm_fee.js)
+  # Earliness machine: new high-fee DLMM pool on a young token -> Telegram
+  toll-watch:
+    build:
+      context: .
+      dockerfile: Dockerfile.toll
+    container_name: toll-watch
+    restart: always
+    volumes:
+      - ./watch_config.json:/app/watch_config.json:ro
+      - ./.toll_state.json:/app/.toll_state.json   # seen pools, MUST survive deploys
+
 networks:
   default:
     name: radar

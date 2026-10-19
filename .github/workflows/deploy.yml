@@ -24,7 +24,7 @@ jobs:
             set -e
             cd /opt/radar
             # state files must exist before bind-mounting (docker creates DIRECTORIES otherwise)
-            for f in .bot_positions.json .bot_sltp.json .bot_cards.json .trade_history.json .denylist.json; do
+            for f in .bot_positions.json .bot_sltp.json .bot_cards.json .trade_history.json .denylist.json .toll_state.json; do
               if [ -d "$f" ]; then rm -rf "$f"; fi
               [ -f "$f" ] || echo '{}' > "$f"
             done
@@ -32,7 +32,7 @@ jobs:
             git reset --hard origin/master
 
             docker compose down
-            docker compose build radar-watcher
+            docker compose build radar-watcher toll-watch
             docker compose up -d --force-recreate
 
             sleep 8
